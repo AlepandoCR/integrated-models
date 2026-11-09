@@ -1,0 +1,5 @@
+# The only place in this repository that names an NmsBridge implementation. Because the name lives
+# here, in the module that compiled it, a build that leaves this module out takes the declaration
+# with it and the lookup finds nothing — the same path a server on an unsupported Minecraft version
+# takes, which is already handled. Nothing above the NMS seam holds an implementation class name.
+pandastic.studio.models.nms.FoliaNmsBridgeProvider

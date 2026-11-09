@@ -1,0 +1,6 @@
+name: integrated-models
+version: '1.0.0'
+main: pandastic.studio.models.internal.IntegratedModelsPlugin
+api-version: '26.3'
+folia-supported: true
+depend: [BetterModel]

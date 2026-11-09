@@ -1,0 +1,53 @@
+[versions]
+# Pinned to an exact build, never a range. "26.3.build.+" silently moves the compile target
+# between two builds of the same working tree, which makes "it compiled yesterday" worthless as
+# evidence; and it has to agree on a Minecraft version with the Folia dev bundle below, which a
+# range cannot promise. 237-stable is the build this tree was last verified against.
+paper = "26.3.build.237-stable"
+# The Folia dev bundle, consumed by paperweight-userdev in integrated-models-nms ONLY.
+#
+# Exact build, and this is the coordinate where a range would hurt most: Minecraft 26.3 has never
+# been promoted past Folia's ALPHA channel. The whole 26.3 line is builds 3..6-alpha, against
+# paper-api's 237-stable — Folia's last stable line is a full minor behind. A "26.3.build.+" here
+# would hand each build a different alpha, so a compile error could appear with no change to this
+# repository at all. Moving this version is a deliberate act with a re-verified build behind it.
+folia = "26.3.build.6-alpha"
+# paperweight-userdev. 2.0.x is required, not preferred: it defaults to MOJANG_PRODUCTION, i.e. it
+# leaves `jar`/`shadowJar` alone and never reobfuscates, which is correct because Paper and Folia
+# have run Mojang-mapped in production since 1.20.5. The 1.x line still assumes a reobf step that
+# a mache-era dev bundle cannot supply (it carries no reobf mappings).
+paperweight = "2.0.0-beta.24"
+annotations = "26.1.0"
+jspecify = "1.0.0"
+# BetterModel 3.5.0 added Minecraft 26.3 support and 3.5.1 fixed a Folia hitbox region
+# issue, so nothing below 3.5.1 is usable here. 3.6.0 is the current release.
+bettermodel = "3.6.0"
+junit = "6.0.0"
+# The sibling runtime library. Supplies the configuration system every tunable value in this
+# project is declared through, and the dialog API any future menu must use.
+pandastic-core = "1.0.0-SNAPSHOT"
+
+[libraries]
+paper-api = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
+# A zip, not a jar: paperweight unpacks it and produces a Mojang-mapped Folia server jar from the
+# paperclip inside. It is declared only on integrated-models-nms' paperweightDevelopmentBundle
+# configuration, so no other module can accidentally compile against a remapped server.
+folia-dev-bundle = { module = "dev.folia:dev-bundle", version.ref = "folia" }
+annotations = { module = "org.jetbrains:annotations", version.ref = "annotations" }
+jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
+# The Bukkit platform layer of BetterModel; it pulls bettermodel-api (kr.toxicity.model.api.*)
+# in transitively. Internal module only — the published API must not mention kr.toxicity.
+bettermodel-bukkit-api = { module = "io.github.toxicity188:bettermodel-bukkit-api", version.ref = "bettermodel" }
+# Shaded and unrelocated, so it carries its own annotation processor: the same coordinate serves
+# as the compile dependency and as the annotationProcessor path.
+pandastic-core = { module = "pandastic.studio:pandastic-core", version.ref = "pandastic-core" }
+# The BOM pins every junit coordinate, so the aggregate and the launcher stay version-less here.
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+
+[plugins]
+shadow = { id = "com.gradleup.shadow", version = "9.6.1" }
+# Applied to integrated-models-nms and to nothing else. See that module's build file for why it is
+# a module of its own rather than a source set.
+paperweight-userdev = { id = "io.papermc.paperweight.userdev", version.ref = "paperweight" }

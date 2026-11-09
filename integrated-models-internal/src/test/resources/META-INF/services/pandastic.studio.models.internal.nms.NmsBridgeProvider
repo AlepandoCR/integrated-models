@@ -1,0 +1,5 @@
+# Test fixture only — this file is in src/test/resources and never ships. It exists so that the
+# ServiceLoader discovery path in NmsBridgeLookup.resolve(String) is covered by a test rather than
+# only by the production jar, where a misspelled service file fails identically to a module that was
+# never built.
+pandastic.studio.models.internal.nms.ServiceLoadedTestProvider
