@@ -59,6 +59,7 @@ public final class ModelSimulation {
     private final @NotNull Pose pose;
     private final @NotNull PoseSink sink;
     private final @NotNull DriverHolder driver;
+    private final int headBone;
 
     /**
      * The solver that created {@link #state}, and the thing a reload is detected by.
@@ -133,6 +134,7 @@ public final class ModelSimulation {
         this.settings = Objects.requireNonNull(settings, "settings");
         this.sink = Objects.requireNonNull(sink, "sink");
         this.driver = Objects.requireNonNull(driver, "driver");
+        this.headBone = rig.indexOf("head").orElse(-1);
         this.solver = settings.current().solver();
         this.state = this.solver.createState(rig);
         this.pose = new Pose(rig.boneCount());
@@ -197,6 +199,13 @@ public final class ModelSimulation {
         // secondary motion on top. See LocomotionStage for why this order is not negotiable.
         if (this.locomotion != null) {
             this.locomotion.advance(this.pose, deltaSeconds, sample);
+        }
+
+        // Locomotion writes the head's base pose. Apply the sampled view after it so the view is
+        // preserved, then let physics add secondary motion to the resulting head and descendants.
+        if (this.headBone >= 0) {
+            this.pose.add(this.headBone, this.driver.headPitchRadians(),
+                    this.driver.headYawRadians(), 0F);
         }
 
         this.solver.solve(this.rig, this.state, this.pose, deltaSeconds, sample);

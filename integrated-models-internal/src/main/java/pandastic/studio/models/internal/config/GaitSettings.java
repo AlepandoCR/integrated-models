@@ -252,6 +252,24 @@ public interface GaitSettings {
         return 0.35F;
     }
 
+    /** Duration of the generic right-hand attack swing, in seconds. */
+    @ConfigValue(comment = "Duration of the generic right-hand attack swing, in seconds.")
+    default float attackDurationSeconds() {
+        return 0.35F;
+    }
+
+    /** Peak upper-arm pitch of the generic right-hand attack swing, in radians. */
+    @ConfigValue(comment = "Peak upper-arm pitch of the generic right-hand attack swing, in radians.")
+    default float attackUpperArmRadians() {
+        return -1.35F;
+    }
+
+    /** Peak forearm pitch of the generic right-hand attack swing, in radians. */
+    @ConfigValue(comment = "Peak forearm pitch of the generic right-hand attack swing, in radians.")
+    default float attackForearmRadians() {
+        return 0.55F;
+    }
+
     /**
      * Forward lean held while walking, in radians (about 6 degrees).
      *

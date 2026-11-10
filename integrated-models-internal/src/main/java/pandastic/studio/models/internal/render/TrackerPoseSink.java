@@ -2,9 +2,11 @@ package pandastic.studio.models.internal.render;
 
 import kr.toxicity.model.api.bone.RenderedBone;
 import kr.toxicity.model.api.data.renderer.ModelRenderer;
+import kr.toxicity.model.api.entity.BaseEntity;
 import kr.toxicity.model.api.nms.AnimationBundler;
 import kr.toxicity.model.api.nms.DisplayTransformer;
 import kr.toxicity.model.api.nms.ModelDisplay;
+import kr.toxicity.model.api.tracker.EntityTracker;
 import kr.toxicity.model.api.tracker.Tracker;
 import kr.toxicity.model.api.util.function.BonePredicate;
 import org.jetbrains.annotations.NotNull;
@@ -118,6 +120,8 @@ public final class TrackerPoseSink implements PoseSink {
     private final @NotNull RigBindPose bindPose;
     private final @NotNull RenderSettingsSource settings;
     private final DisplayTransformer[] transformers;
+    /** BetterModel applies this after the model transform; keep the same player passenger offset. */
+    private final @NotNull Vector3f defaultPosition;
 
     /**
      * Guarded by {@link #lock}, and the only mutable collaborator here.
@@ -163,12 +167,16 @@ public final class TrackerPoseSink implements PoseSink {
             @NotNull RigBindPose bindPose,
             DisplayTransformer[] transformers,
             @NotNull RenderSettingsSource settings,
-            @NotNull RenderSettings initial
+            @NotNull RenderSettings initial,
+            @NotNull Vector3f defaultPosition,
+            @NotNull BaseEntity sourceEntity,
+            int headBone
     ) {
         final int bones = rig.boneCount();
         this.rig = rig;
         this.bindPose = bindPose;
         this.settings = settings;
+        this.defaultPosition = new Vector3f(defaultPosition);
         this.dirty = BoneDirtyTracker.of(rig, initial);
         this.transformers = transformers;
         this.scales = new float[bones * VECTOR_COMPONENTS];
@@ -199,7 +207,7 @@ public final class TrackerPoseSink implements PoseSink {
      *
      * @param settings where the sink reads the dirty epsilon from, once per emission
      * @throws IllegalStateException if the tracker renders a different model than the rig names, or any
-     *                               bone is missing, ambiguous, or has no display to drive
+     *                               bone is missing, ambiguous, or a simulated bone has no display
      */
     public static @NotNull TrackerPoseSink bind(
             @NotNull Rig rig,
@@ -234,7 +242,9 @@ public final class TrackerPoseSink implements PoseSink {
             }
             final ModelDisplay display = rendered.getDisplay();
             if (display == null) {
-                withoutDisplay.add(name);
+                if (rig.bone(bone).hasPhysics()) {
+                    withoutDisplay.add(name);
+                }
                 continue;
             }
             // Once per bone, for the lifetime of the binding. See trap 3 in the class javadoc.
@@ -247,13 +257,23 @@ public final class TrackerPoseSink implements PoseSink {
                             + "' tracker: " + unresolved.size() + " bone(s) did not resolve "
                             + unresolved + " and " + withoutDisplay.size()
                             + " bone(s) have no display to drive " + withoutDisplay
-                            + ". A bone with no display is a group with no cubes in it — the rig cannot"
-                            + " move something the renderer never spawned.");
+                            + ".");
         }
 
+        if (!(tracker instanceof EntityTracker entityTracker)) {
+            throw new IllegalArgumentException("A rig pose sink requires an entity tracker");
+        }
         final TrackerPoseSink sink =
-                new TrackerPoseSink(rig, bindPose, transformers, settings, initial);
-        tracker.frame(sink::drain);
+                new TrackerPoseSink(
+                        rig, bindPose, transformers, settings, initial,
+                        entityTracker.sourceEntity().passengerPosition(new Vector3f()).mul(-1F),
+                        entityTracker.sourceEntity(), rig.indexOf("head").orElse(-1));
+        tracker.frame((liveTracker, bundlerSet) -> {
+            // BetterModel's automatic walk animation writes the same limb rotations as the gait stage.
+            // Stop it immediately before packet assembly so the rig remains the sole limb writer.
+            liveTracker.stopAnimation("walk");
+            sink.drain(liveTracker, bundlerSet);
+        });
         return sink;
     }
 
@@ -301,6 +321,7 @@ public final class TrackerPoseSink implements PoseSink {
                 if (!this.dirty.admit(bone, pose.pitch(bone), pose.yaw(bone), pose.roll(bone))) {
                     continue;
                 }
+
                 this.bindPose.rotation(bone, this.rotationIn);
                 this.bindPose.position(bone, this.positionIn);
 
@@ -324,6 +345,16 @@ public final class TrackerPoseSink implements PoseSink {
         } finally {
             this.lock.unlock();
         }
+    }
+
+    private static float wrapDegrees(float degrees) {
+        float wrapped = degrees % 360F;
+        if (wrapped >= 180F) {
+            wrapped -= 360F;
+        } else if (wrapped < -180F) {
+            wrapped += 360F;
+        }
+        return wrapped;
     }
 
     /**
@@ -395,6 +426,9 @@ public final class TrackerPoseSink implements PoseSink {
                     continue;
                 }
                 this.staged[bone] = false;
+                if (this.transformers[bone] == null) {
+                    continue;
+                }
 
                 final int quaternionSlot = bone * QUATERNION_COMPONENTS;
                 this.rotationOut.set(
@@ -408,6 +442,7 @@ public final class TrackerPoseSink implements PoseSink {
                         this.stagedPosition[vectorSlot],
                         this.stagedPosition[vectorSlot + 1],
                         this.stagedPosition[vectorSlot + 2]);
+                this.positionOut.add(this.defaultPosition);
                 this.scaleOut.set(
                         this.scales[vectorSlot],
                         this.scales[vectorSlot + 1],

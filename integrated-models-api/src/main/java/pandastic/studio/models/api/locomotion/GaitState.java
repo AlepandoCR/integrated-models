@@ -21,6 +21,16 @@ package pandastic.studio.models.api.locomotion;
 public interface GaitState {
 
     /**
+     * Requests one generic right-hand attack swing. The request is consumed by the locomotion solver
+     * on its next step; repeated requests restart the swing from its beginning.
+     *
+     * <p>The default is a no-op so custom gait implementations that do not support attack posing remain
+     * source-compatible. The built-in solver uses the request when the corresponding arm roles exist.
+     */
+    default void triggerAttack() {
+    }
+
+    /**
      * Returns the gait to a standing rest: phase zero, no amplitude, no blends, no elapsed time.
      *
      * <p>Note this snaps, and that snapping is wrong for a model that is visibly walking — resetting

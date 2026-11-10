@@ -850,6 +850,11 @@ public final class ConfigMapper {
                 0F, MAX_AMPLITUDE_RADIANS);
         checks.inRange(file, "armSwingRadians", gait.armSwingRadians(), 0F, MAX_AMPLITUDE_RADIANS);
         checks.inRange(file, "forearmCurlRadians", gait.forearmCurlRadians(), 0F, MAX_AMPLITUDE_RADIANS);
+        checks.above(file, "attackDurationSeconds", gait.attackDurationSeconds(), 0F, 10F);
+        checks.inRange(file, "attackUpperArmRadians", gait.attackUpperArmRadians(),
+                -MAX_AMPLITUDE_RADIANS, MAX_AMPLITUDE_RADIANS);
+        checks.inRange(file, "attackForearmRadians", gait.attackForearmRadians(),
+                -MAX_AMPLITUDE_RADIANS, MAX_AMPLITUDE_RADIANS);
         checks.inRange(file, "torsoLeanRadians", gait.torsoLeanRadians(), 0F, MAX_AMPLITUDE_RADIANS);
         checks.inRange(file, "torsoBobRadians", gait.torsoBobRadians(), 0F, MAX_AMPLITUDE_RADIANS);
         checks.inRange(file, "torsoBobHarmonic", gait.torsoBobHarmonic(), 0F, 8F);
@@ -1883,6 +1888,9 @@ public final class ConfigMapper {
                 .sprintLegSwingRadians(gait.sprintLegSwingRadians())
                 .armSwingRadians(gait.armSwingRadians())
                 .forearmCurlRadians(gait.forearmCurlRadians())
+                .attackDurationSeconds(gait.attackDurationSeconds())
+                .attackUpperArmRadians(gait.attackUpperArmRadians())
+                .attackForearmRadians(gait.attackForearmRadians())
                 .torsoLeanRadians(gait.torsoLeanRadians())
                 .torsoBobRadians(gait.torsoBobRadians())
                 .torsoBobHarmonic(gait.torsoBobHarmonic())

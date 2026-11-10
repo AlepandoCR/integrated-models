@@ -387,7 +387,7 @@ class ConfigMapperTest {
 
             @Override
             public int maxInterpolationTicks() {
-                return 10;
+                return 5;
             }
         }), ConfigFile.RENDER, "minInterpolationTicks");
     }
@@ -420,7 +420,7 @@ class ConfigMapperTest {
         final ConfigMapper.Result result = mapSimulation(new SimulationSettings() {
             @Override
             public int loopRateHz() {
-                return 10;
+                return 5;
             }
         });
         assertAll(
@@ -443,7 +443,7 @@ class ConfigMapperTest {
         final ConfigMapper.Result result = mapSimulation(new SimulationSettings() {
             @Override
             public int loopRateHz() {
-                return 50;
+                return 45;
             }
         });
         assertAll(

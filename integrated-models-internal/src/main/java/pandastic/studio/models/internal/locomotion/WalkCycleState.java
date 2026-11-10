@@ -76,6 +76,9 @@ final class WalkCycleState implements GaitState {
     /** Wall time stepped, wrapped at a whole number of breathing cycles. */
     float elapsedSeconds;
 
+    /** Elapsed time in the current attack swing, or a negative value when none is active. */
+    float attackElapsedSeconds = -1F;
+
     /** The requested airborne stance, set by the owner's thread. */
     boolean airborne;
 
@@ -103,6 +106,7 @@ final class WalkCycleState implements GaitState {
         // forward axis", which is a real state and emphatically not a stand.
         this.strideBias = 1F;
         this.elapsedSeconds = 0F;
+        this.attackElapsedSeconds = -1F;
         this.airborne = false;
         this.sneaking = false;
     }
@@ -152,6 +156,11 @@ final class WalkCycleState implements GaitState {
         this.sneaking = sneaking;
     }
 
+    @Override
+    public void triggerAttack() {
+        this.attackElapsedSeconds = 0F;
+    }
+
     /**
      * {@inheritDoc}
      *
@@ -163,6 +172,7 @@ final class WalkCycleState implements GaitState {
     @Override
     public boolean isSettled() {
         return this.amplitude < this.settledAmplitude
+                && this.attackElapsedSeconds < 0F
                 && this.airborneBlend == (this.airborne ? 1F : 0F)
                 && this.sneakBlend == (this.sneaking ? 1F : 0F);
     }

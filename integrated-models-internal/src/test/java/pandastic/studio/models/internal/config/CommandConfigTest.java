@@ -88,7 +88,7 @@ class CommandConfigTest {
                 () -> assertEquals("done, <rigs> rig(s)", service.command().appliedMessage()),
                 // Untouched keys keep their declared defaults, which is what makes a partial file legal.
                 () -> assertTrue(service.command().hasStartedMessage()),
-                () -> assertEquals(20, service.snapshot().render().emissionHz()));
+                () -> assertEquals(10, service.snapshot().render().emissionHz()));
     }
 
     @Test

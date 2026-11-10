@@ -115,6 +115,9 @@ class WalkCycleSolverTest {
                 .sprintLegSwingRadians(1.05F)
                 .armSwingRadians(0.55F)
                 .forearmCurlRadians(0.35F)
+                .attackDurationSeconds(0.35F)
+                .attackUpperArmRadians(-1.35F)
+                .attackForearmRadians(0.55F)
                 .torsoLeanRadians(0.10F)
                 .torsoBobRadians(0.035F)
                 .torsoBobHarmonic(2F)
@@ -211,6 +214,24 @@ class WalkCycleSolverTest {
                 .boneIndex(GaitRole.LEFT_HAND, LEFT_HAND)
                 .boneIndex(GaitRole.RIGHT_HAND, RIGHT_HAND)
                 .build();
+    }
+
+    @Test
+    void attackSwingUsesOnlyTheBoundRightArmRolesAndSettles() {
+        final LocomotionBinding binding = kneedWithHands(humanoid());
+        final WalkCycleState state = state(binding);
+        final Pose pose = new Pose(binding.boneCount());
+
+        state.triggerAttack();
+        step(binding, state, pose, 0F, CALIBRATED.attackDurationSeconds() * 0.5F);
+
+        assertEquals(CALIBRATED.attackUpperArmRadians(), pose.pitch(RIGHT_ARM), 1.0E-5F);
+        assertEquals(binding.elbowBendSign() * CALIBRATED.attackForearmRadians(),
+                pose.pitch(RIGHT_FOREARM), 1.0E-5F);
+        assertFalse(state.isSettled());
+
+        step(binding, state, pose, 0F, CALIBRATED.attackDurationSeconds());
+        assertTrue(state.isSettled());
     }
 
     /** A kneed humanoid whose mesh was modelled facing {@code degrees} away from where it walks. */
@@ -788,25 +809,31 @@ class WalkCycleSolverTest {
     }
 
     @Test
-    void theHeadCancelsMostOfWhatTheTorsoDoes() {
+    void crouchTiltsTheUpperBodyButKeepsTheLegRootsUpright() {
         final Rig rig = humanoid();
         final LocomotionBinding binding = kneed(rig);
         final WalkCycleState gait = state(binding);
         final Pose pose = new Pose(rig.boneCount());
         final GaitProfile noBreath = GaitProfile.builder(CALIBRATED).breathDepth(0F).build();
+        final WalkCycleState uprightGait = state(binding);
+        final Pose uprightPose = new Pose(rig.boneCount());
 
         gait.setSneaking(true);
         for (int tick = 0; tick < 20; tick++) {
             this.solver.solve(binding, noBreath, gait, pose, TICK, PhysicsDriver.STILL);
+            this.solver.solve(binding, noBreath, uprightGait, uprightPose, TICK, PhysicsDriver.STILL);
         }
 
-        final float expected = -noBreath.headStabilise() * CALIBRATED.sneakTorsoPitchRadians();
         assertAll(
                 () -> assertEquals(CALIBRATED.sneakTorsoPitchRadians(), pose.pitch(TORSO), 1.0E-6F),
-                () -> assertEquals(expected, pose.pitch(HEAD), 1.0E-6F,
-                        "the head must cancel headStabilise of the torso's pitch"),
-                () -> assertTrue(Math.abs(pose.pitch(HEAD)) < Math.abs(pose.pitch(TORSO)),
-                        "most of it, not all of it: a perfectly level head reads as detached"));
+                () -> assertEquals(0F, pose.pitch(HEAD), 1.0E-6F,
+                        "the head inherits the upper-body crouch"),
+                () -> assertEquals(uprightPose.pitch(LEFT_THIGH) - CALIBRATED.sneakTorsoPitchRadians(),
+                        pose.pitch(LEFT_THIGH), 1.0E-6F,
+                        "the left leg root cancels the torso crouch"),
+                () -> assertEquals(uprightPose.pitch(RIGHT_THIGH) - CALIBRATED.sneakTorsoPitchRadians(),
+                        pose.pitch(RIGHT_THIGH), 1.0E-6F,
+                        "the right leg root cancels the torso crouch"));
     }
 
     @Test

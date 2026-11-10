@@ -44,6 +44,8 @@ public final class DriverHolder {
      * independently — simulates a motionless owner instead of needing a null check in the hot path.
      */
     private volatile @NotNull PhysicsDriver published = PhysicsDriver.STILL;
+    private volatile float headYawRadians;
+    private volatile float headPitchRadians;
 
     /** Publishes {@code driver}. Called from the owning region thread, once per tick. */
     public void publish(@NotNull PhysicsDriver driver) {
@@ -55,6 +57,19 @@ public final class DriverHolder {
         return this.published;
     }
 
+    public void publishHeadOrientation(float yawRadians, float pitchRadians) {
+        this.headYawRadians = yawRadians;
+        this.headPitchRadians = pitchRadians;
+    }
+
+    public float headYawRadians() {
+        return this.headYawRadians;
+    }
+
+    public float headPitchRadians() {
+        return this.headPitchRadians;
+    }
+
     /**
      * Forgets the last sample.
      *
@@ -63,5 +78,7 @@ public final class DriverHolder {
      */
     public void reset() {
         this.published = PhysicsDriver.STILL;
+        this.headYawRadians = 0F;
+        this.headPitchRadians = 0F;
     }
 }

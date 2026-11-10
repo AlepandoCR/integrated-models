@@ -13,6 +13,8 @@ import pandastic.studio.models.internal.ai.AiRuntime;
 import pandastic.studio.models.internal.ai.AiSettings;
 import pandastic.studio.models.internal.ai.AiSettingsSource;
 import pandastic.studio.models.internal.binding.AnchorFactory;
+import pandastic.studio.models.internal.binding.AttackTracker;
+import pandastic.studio.models.internal.binding.DerivedLocomotionStageSource;
 import pandastic.studio.models.internal.binding.LocomotionStageSource;
 import pandastic.studio.models.internal.binding.ModelBinderImpl;
 import pandastic.studio.models.internal.binding.RigBindValidator;
@@ -180,6 +182,8 @@ final class ModelRuntime {
 
         // 2. The render seam, because the three factories below are built from it.
         final RenderSettingsSource renderSettings = renderSource(configs);
+        final AttackTracker attacks = new AttackTracker();
+        Bukkit.getPluginManager().registerEvents(attacks, plugin);
 
         // 3. The NMS adapter, or the reason there is none. Resolved before the AI layer, which is the
         //    only thing that cannot be built without one, and before the vehicle hosts, which can.
@@ -200,16 +204,15 @@ final class ModelRuntime {
                 new AsyncSimulationScheduler(plugin),
                 new ComponentSimulationLogger(logger),
                 SimulationClock.SYSTEM,
-                AnchorFactory.entities(plugin, renderSettings),
+                AnchorFactory.entities(plugin, renderSettings, attacks),
                 DecorationAnchorFactory.worlds(plugin, renderSettings),
                 VehicleHostFactory.entities(plugin,
                         bridge == null ? DECLINING_MOVEMENT : bridge.movement(),
                         bridge == null ? DECLINING_INPUT : bridge.riderInput()),
                 RigBindValidator.renderer(renderSettings),
-                // Every rig the file format currently describes is decorative, so no rig carries a gait
-                // description yet. A model bound through this gets secondary motion and no walk cycle,
-                // which is exactly right for them; the walk cycle arrives as a real source here.
-                LocomotionStageSource.NONE,
+                // Rigs with conventional limb names receive the configured walk cycle; decorative rigs
+                // still return null and retain their physics-only behaviour.
+                new DerivedLocomotionStageSource(configs),
                 ai);
     }
 

@@ -136,6 +136,9 @@ public record GaitTuning(
         float sprintLegSwingRadians,
         float armSwingRadians,
         float forearmCurlRadians,
+        float attackDurationSeconds,
+        float attackUpperArmRadians,
+        float attackForearmRadians,
         float torsoLeanRadians,
         float torsoBobRadians,
         float torsoBobHarmonic,
@@ -193,6 +196,9 @@ public record GaitTuning(
         requireFinite(sprintLegSwingRadians, "sprintLegSwingRadians");
         requireFinite(armSwingRadians, "armSwingRadians");
         requireFinite(forearmCurlRadians, "forearmCurlRadians");
+        requirePositive(attackDurationSeconds, "attackDurationSeconds");
+        requireFinite(attackUpperArmRadians, "attackUpperArmRadians");
+        requireFinite(attackForearmRadians, "attackForearmRadians");
         requireFinite(torsoLeanRadians, "torsoLeanRadians");
         requireFinite(torsoBobRadians, "torsoBobRadians");
         requireNonNegative(torsoBobHarmonic, "torsoBobHarmonic");
@@ -297,7 +303,8 @@ public record GaitTuning(
                 "sneakTorsoPitchRadians", "fullStrideSpeedBlocksPerTick", "sprintSpeedBlocksPerTick",
                 "strideToFootReach", "footLiftFraction", "footToeOffRadians", "footHeelStrikeRadians",
                 "maxIkReachFraction", "minIkDownFraction", "legSwingRadians", "sprintLegSwingRadians",
-                "armSwingRadians", "forearmCurlRadians", "torsoLeanRadians", "torsoBobRadians",
+                "armSwingRadians", "forearmCurlRadians", "attackDurationSeconds",
+                "attackUpperArmRadians", "attackForearmRadians", "torsoLeanRadians", "torsoBobRadians",
                 "torsoBobHarmonic", "torsoSwayRadians", "torsoTwistRadians", "breathRateHz",
                 "breathRadians", "amplitudeBlendSeconds", "airborneBlendSeconds", "sneakBlendSeconds",
                 "maxStepSeconds", "maxGaitSpeedBlocksPerTick", "maxPhaseAdvancePerStep",
@@ -320,6 +327,9 @@ public record GaitTuning(
         private float sprintLegSwingRadians;
         private float armSwingRadians;
         private float forearmCurlRadians;
+        private float attackDurationSeconds;
+        private float attackUpperArmRadians;
+        private float attackForearmRadians;
         private float torsoLeanRadians;
         private float torsoBobRadians;
         private float torsoBobHarmonic;
@@ -435,6 +445,24 @@ public record GaitTuning(
         public @NotNull Builder forearmCurlRadians(float forearmCurlRadians) {
             this.forearmCurlRadians = forearmCurlRadians;
             this.unset.remove("forearmCurlRadians");
+            return this;
+        }
+
+        public @NotNull Builder attackDurationSeconds(float attackDurationSeconds) {
+            this.attackDurationSeconds = attackDurationSeconds;
+            this.unset.remove("attackDurationSeconds");
+            return this;
+        }
+
+        public @NotNull Builder attackUpperArmRadians(float attackUpperArmRadians) {
+            this.attackUpperArmRadians = attackUpperArmRadians;
+            this.unset.remove("attackUpperArmRadians");
+            return this;
+        }
+
+        public @NotNull Builder attackForearmRadians(float attackForearmRadians) {
+            this.attackForearmRadians = attackForearmRadians;
+            this.unset.remove("attackForearmRadians");
             return this;
         }
 
@@ -565,7 +593,8 @@ public record GaitTuning(
                     this.strideToFootReach, this.footLiftFraction, this.footToeOffRadians,
                     this.footHeelStrikeRadians, this.maxIkReachFraction, this.minIkDownFraction,
                     this.legSwingRadians, this.sprintLegSwingRadians, this.armSwingRadians,
-                    this.forearmCurlRadians, this.torsoLeanRadians, this.torsoBobRadians,
+                    this.forearmCurlRadians, this.attackDurationSeconds, this.attackUpperArmRadians,
+                    this.attackForearmRadians, this.torsoLeanRadians, this.torsoBobRadians,
                     this.torsoBobHarmonic, this.torsoSwayRadians, this.torsoTwistRadians,
                     this.breathRateHz, this.breathRadians, this.amplitudeBlendSeconds,
                     this.airborneBlendSeconds, this.sneakBlendSeconds, this.maxStepSeconds,

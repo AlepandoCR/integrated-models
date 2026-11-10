@@ -152,6 +152,8 @@ public final class RiggedModelImpl implements RiggedModel {
      * pipeline — and when it stated none the two are the same object.
      */
     private final @NotNull DriverSampler driverSampler;
+    private long attackSequence;
+    private boolean attackSeeded;
 
     /**
      * Read by the sampler on the region thread with no lock, so volatile rather than monitor-guarded.
@@ -292,6 +294,7 @@ public final class RiggedModelImpl implements RiggedModel {
             // binding has to be a first sample rather than a difference against the old one.
             this.driver.reset();
             this.driverSampler.reset();
+            this.attackSeeded = false;
 
             final ModelSimulation built = new ModelSimulation(
                     this.rig, this.simulationSettings, opened.sink(), this.driver,
@@ -454,9 +457,20 @@ public final class RiggedModelImpl implements RiggedModel {
 
         this.driverSampler.sampleInto(this.driver, this.sample.x(), this.sample.y(), this.sample.z(),
                 this.sample.yawDegrees());
+        this.driver.publishHeadOrientation(
+                (float) Math.toRadians(DriverSampler.wrapDegrees(
+                        this.sample.yawDegrees() - this.sample.headYawDegrees())),
+                (float) Math.toRadians(this.sample.pitchDegrees()));
 
         final LocomotionStage gait = running.locomotion();
         if (gait != null) {
+            if (!this.attackSeeded) {
+                this.attackSequence = this.sample.attackSequence();
+                this.attackSeeded = true;
+            } else if (this.sample.attackSequence() != this.attackSequence) {
+                this.attackSequence = this.sample.attackSequence();
+                gait.state().triggerAttack();
+            }
             // Booleans across the same boundary the driver already crosses, and for the same reason:
             // these are things only a region thread can know and the simulation must not go looking
             // for. The gait eases toward them rather than snapping, which is why they are state and not

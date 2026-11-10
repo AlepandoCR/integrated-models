@@ -71,6 +71,8 @@ public final class LocomotionBinding {
     private final float shinLength;
     private final float kneeBendSign;
     private final float facingDegrees;
+    private final @NotNull ArmSwingAxis armSwingAxis;
+    private final @NotNull ArmSwingAxis handSwingAxis;
 
     /**
      * {@link #facingDegrees} as a rotation, resolved once.
@@ -89,7 +91,9 @@ public final class LocomotionBinding {
             float thighLength,
             float shinLength,
             float kneeBendSign,
-            float facingDegrees
+            float facingDegrees,
+            @NotNull ArmSwingAxis armSwingAxis,
+            @NotNull ArmSwingAxis handSwingAxis
     ) {
         this.rigName = rigName;
         this.boneCount = boneCount;
@@ -98,6 +102,8 @@ public final class LocomotionBinding {
         this.shinLength = shinLength;
         this.kneeBendSign = kneeBendSign;
         this.facingDegrees = facingDegrees;
+        this.armSwingAxis = armSwingAxis;
+        this.handSwingAxis = handSwingAxis;
 
         final double radians = Math.toRadians(facingDegrees);
         this.facingCos = (float) Math.cos(radians);
@@ -249,6 +255,16 @@ public final class LocomotionBinding {
         return this.facingDegrees;
     }
 
+    /** The authored local axis used by arm walking and attack motion. */
+    public @NotNull ArmSwingAxis armSwingAxis() {
+        return this.armSwingAxis;
+    }
+
+    /** The authored local axis used for the hand's stabilising motion. */
+    public @NotNull ArmSwingAxis handSwingAxis() {
+        return this.handSwingAxis;
+    }
+
     /**
      * {@code driver}'s fore-aft speed, re-expressed along the rig's own forward axis.
      *
@@ -321,6 +337,8 @@ public final class LocomotionBinding {
          * {@link #facing(float)}.
          */
         private float facingDegrees;
+        private @NotNull ArmSwingAxis armSwingAxis = ArmSwingAxis.PITCH;
+        private @NotNull ArmSwingAxis handSwingAxis = ArmSwingAxis.PITCH;
 
         private Builder(@NotNull Rig rig, @NotNull BindingBounds bounds) {
             this.rig = rig;
@@ -408,7 +426,20 @@ public final class LocomotionBinding {
                         "A facing is an angle in degrees and must be finite, got " + degrees
                                 + ". Any finite value is legal: a bearing wraps.");
             }
+
             this.facingDegrees = degrees;
+            return this;
+        }
+
+        /** Sets the authored local axis used for arm walking and attack motion. */
+        public @NotNull Builder armSwingAxis(@NotNull ArmSwingAxis axis) {
+            this.armSwingAxis = axis;
+            return this;
+        }
+
+        /** Sets the authored local axis used for hand stabilisation. */
+        public @NotNull Builder handSwingAxis(@NotNull ArmSwingAxis axis) {
+            this.handSwingAxis = axis;
             return this;
         }
 
@@ -483,7 +514,8 @@ public final class LocomotionBinding {
 
             return new LocomotionBinding(
                     this.rig.getName(), this.rig.boneCount(), this.boneByRole.clone(),
-                    this.thighLength, this.shinLength, this.kneeBendSign, this.facingDegrees);
+                    this.thighLength, this.shinLength, this.kneeBendSign, this.facingDegrees,
+                    this.armSwingAxis, this.handSwingAxis);
         }
     }
 }

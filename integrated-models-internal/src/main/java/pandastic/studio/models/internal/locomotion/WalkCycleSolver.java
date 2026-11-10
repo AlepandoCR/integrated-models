@@ -257,6 +257,12 @@ public final class WalkCycleSolver implements LocomotionSolver {
             elapsed -= this.elapsedWrapSeconds;
         }
         gait.elapsedSeconds = elapsed;
+        if (gait.attackElapsedSeconds >= 0F) {
+            gait.attackElapsedSeconds += step;
+            if (gait.attackElapsedSeconds >= this.tuning.attackDurationSeconds()) {
+                gait.attackElapsedSeconds = -1F;
+            }
+        }
 
         // Horizontal speed only, and in the rig's own frame rather than the owner's — the rotation is
         // the first thing done with a sample, so everything downstream of it is already expressed in
@@ -399,11 +405,11 @@ public final class WalkCycleSolver implements LocomotionSolver {
         }
         if (binding.isBound(GaitRole.HEAD)) {
             // The head cancels a fraction of whatever the torso is doing, so the model keeps looking
-            // where it is going while crouching and while bobbing. Breathing is left out: it is below
-            // the threshold of visibility and cancelling it would only halve something invisible.
+            // where it is going while walking. Crouch is deliberately not cancelled: it belongs to
+            // the upper body, while the leg roots counter-rotate it below.
             final float cancel = profile.headStabilise();
             pose.set(binding.boneOf(GaitRole.HEAD),
-                    -cancel * (crouch + lean + bob),
+                    -cancel * (lean + bob),
                     -cancel * twist,
                     -cancel * roll);
         }
@@ -416,11 +422,12 @@ public final class WalkCycleSolver implements LocomotionSolver {
         final float walkSwing = this.tuning.legSwingRadians();
         final float onePieceSwing =
                 walkSwing + gait.sprintBlend * (this.tuning.sprintLegSwingRadians() - walkSwing);
+        final float legCrouch = binding.isBound(GaitRole.TORSO) ? -crouch : 0F;
 
         writeLeg(binding, profile, gait, pose, legScale, onePieceSwing, cycle,
-                GaitRole.LEFT_THIGH, GaitRole.LEFT_SHIN, GaitRole.LEFT_FOOT);
+                GaitRole.LEFT_THIGH, GaitRole.LEFT_SHIN, GaitRole.LEFT_FOOT, legCrouch);
         writeLeg(binding, profile, gait, pose, legScale, onePieceSwing, opposed,
-                GaitRole.RIGHT_THIGH, GaitRole.RIGHT_SHIN, GaitRole.RIGHT_FOOT);
+                GaitRole.RIGHT_THIGH, GaitRole.RIGHT_SHIN, GaitRole.RIGHT_FOOT, legCrouch);
 
         // Arms oppose their own side's leg: the left arm travels with the right leg and vice versa. That
         // is what cancels the angular momentum a stride generates, and a model whose arms swing in phase
@@ -430,6 +437,7 @@ public final class WalkCycleSolver implements LocomotionSolver {
                 GaitRole.LEFT_UPPER_ARM, GaitRole.LEFT_FOREARM, GaitRole.LEFT_HAND);
         writeArm(binding, profile, gait, pose, armScale, cycle,
                 GaitRole.RIGHT_UPPER_ARM, GaitRole.RIGHT_FOREARM, GaitRole.RIGHT_HAND);
+        writeAttack(binding, gait, pose);
     }
 
     /**
@@ -459,7 +467,8 @@ public final class WalkCycleSolver implements LocomotionSolver {
             float angle,
             @NotNull GaitRole thighRole,
             @NotNull GaitRole shinRole,
-            @NotNull GaitRole footRole
+            @NotNull GaitRole footRole,
+            float legCrouch
     ) {
         if (!binding.isBound(thighRole)) {
             return;
@@ -479,7 +488,7 @@ public final class WalkCycleSolver implements LocomotionSolver {
             // One-piece leg: nothing to solve for, so it simply swings about the hip.
             thighPitch = legScale * swingRadians * sine;
             shinPitch = 0F;
-            pose.set(thighBone, thighPitch, 0F, 0F);
+            pose.set(thighBone, thighPitch + legCrouch, 0F, 0F);
         } else {
             final float thigh = binding.thighLength();
             final float shin = binding.shinLength();
@@ -512,7 +521,7 @@ public final class WalkCycleSolver implements LocomotionSolver {
                     thigh, shin, down, forward, binding.kneeBendSign(), this.ikTolerance);
             thighPitch = solved.upperAngle();
             shinPitch = solved.lowerAngle();
-            pose.set(thighBone, thighPitch, 0F, 0F);
+            pose.set(thighBone, thighPitch + legCrouch, 0F, 0F);
             pose.set(binding.boneOf(shinRole), shinPitch, 0F, 0F);
         }
 
@@ -577,21 +586,88 @@ public final class WalkCycleSolver implements LocomotionSolver {
         }
         final float swing = gait.strideBias * (float) Math.sin(angle);
         final float upperPitch = armScale * this.tuning.armSwingRadians() * swing;
-        pose.set(binding.boneOf(upperRole), upperPitch, 0F, 0F);
+        setArmAxis(pose, binding, upperRole, upperPitch);
 
         float lowerPitch = 0F;
         if (binding.isBound(lowerRole)) {
             final float curl = armScale * this.tuning.forearmCurlRadians() * 0.5F * (1F + swing);
             lowerPitch = binding.elbowBendSign() * curl;
-            pose.set(binding.boneOf(lowerRole), lowerPitch, 0F, 0F);
+            setArmAxis(pose, binding, lowerRole, lowerPitch);
         }
 
         if (binding.isBound(handRole)) {
             // A fraction of the chain cancelled rather than all of it. Zero leaves the hand welded to
             // whatever it hangs from, which is what the pose's own zero already means — so the identity
             // case costs nothing and needs no branch.
-            pose.set(binding.boneOf(handRole),
-                    -profile.handStabilise() * (upperPitch + lowerPitch), 0F, 0F);
+            setHandAxis(pose, binding, handRole,
+                    -profile.handStabilise() * (upperPitch + lowerPitch));
+        }
+    }
+
+    /**
+     * Adds the generic primary-hand swing on top of the walk pose. Only the conventional right-arm
+     * roles are used; rigs without one of them simply receive the portion they can represent.
+     */
+    private void writeAttack(
+            @NotNull LocomotionBinding binding,
+            @NotNull WalkCycleState gait,
+            @NotNull Pose pose
+    ) {
+        if (gait.attackElapsedSeconds < 0F) {
+            return;
+        }
+        final float progress = Math.min(1F,
+                gait.attackElapsedSeconds / this.tuning.attackDurationSeconds());
+        final float envelope = (float) Math.sin(Math.PI * progress);
+        if (binding.isBound(GaitRole.RIGHT_UPPER_ARM)) {
+            addArmAxis(pose, binding, GaitRole.RIGHT_UPPER_ARM,
+                    this.tuning.attackUpperArmRadians() * envelope);
+        }
+        if (binding.isBound(GaitRole.RIGHT_FOREARM)) {
+            addArmAxis(pose, binding, GaitRole.RIGHT_FOREARM,
+                    binding.elbowBendSign() * this.tuning.attackForearmRadians() * envelope);
+        }
+    }
+
+    private static void setArmAxis(
+            @NotNull Pose pose,
+            @NotNull LocomotionBinding binding,
+            @NotNull GaitRole role,
+            float value
+    ) {
+        final int bone = binding.boneOf(role);
+        switch (binding.armSwingAxis()) {
+            case PITCH -> pose.set(bone, value, 0F, 0F);
+            case YAW -> pose.set(bone, 0F, value, 0F);
+            case ROLL -> pose.set(bone, 0F, 0F, value);
+        }
+    }
+
+    private static void addArmAxis(
+            @NotNull Pose pose,
+            @NotNull LocomotionBinding binding,
+            @NotNull GaitRole role,
+            float value
+    ) {
+        final int bone = binding.boneOf(role);
+        switch (binding.armSwingAxis()) {
+            case PITCH -> pose.add(bone, value, 0F, 0F);
+            case YAW -> pose.add(bone, 0F, value, 0F);
+            case ROLL -> pose.add(bone, 0F, 0F, value);
+        }
+    }
+
+    private static void setHandAxis(
+            @NotNull Pose pose,
+            @NotNull LocomotionBinding binding,
+            @NotNull GaitRole role,
+            float value
+    ) {
+        final int bone = binding.boneOf(role);
+        switch (binding.handSwingAxis()) {
+            case PITCH -> pose.set(bone, value, 0F, 0F);
+            case YAW -> pose.set(bone, 0F, value, 0F);
+            case ROLL -> pose.set(bone, 0F, 0F, value);
         }
     }
 }

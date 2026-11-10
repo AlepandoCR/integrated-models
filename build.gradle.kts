@@ -4,7 +4,7 @@ plugins {
 
 allprojects {
     group = "pandastic.studio"
-    version = "1.0.1-SNAPSHOT"
+    version = "1.0.2-SNAPSHOT"
 }
 
 subprojects {

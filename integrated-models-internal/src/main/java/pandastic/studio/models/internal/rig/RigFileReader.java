@@ -8,6 +8,7 @@ import pandastic.studio.models.api.rig.PhysicsKind;
 import pandastic.studio.models.api.rig.PhysicsProfile;
 import pandastic.studio.models.api.rig.ProfileBounds;
 import pandastic.studio.models.api.rig.Rig;
+import pandastic.studio.models.api.locomotion.ArmSwingAxis;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -36,8 +37,10 @@ final class RigFileReader {
     // still works. That is why the sets below read as one word: `collisionradius` is the canonical
     // form of the key the author writes as `collision-radius`. The *_HELP strings carry the
     // author-facing spelling, because a warning that lists canonical forms helps nobody.
-    private static final Set<String> TOP_LEVEL_KEYS = Set.of("name", "model", "bones");
-    private static final String TOP_LEVEL_HELP = "name, model, bones";
+    private static final Set<String> TOP_LEVEL_KEYS =
+            Set.of("name", "model", "bones", "armswingaxis", "handswingaxis");
+    private static final String TOP_LEVEL_HELP =
+            "name, model, bones, arm-swing-axis, hand-swing-axis";
 
     private static final Set<String> BONE_KEYS = Set.of("parent", "physics");
     private static final String BONE_HELP = "parent, physics";
@@ -112,7 +115,12 @@ final class RigFileReader {
             return RigLoadResult.failure(this.diagnostics);
         }
 
-        return build(name, modelId, enforceBoneCeiling(ordered));
+        final ArmSwingAxis armSwingAxis = readArmSwingAxis(top);
+        final ArmSwingAxis handSwingAxis = readHandSwingAxis(top);
+        if (hasErrors()) {
+            return RigLoadResult.failure(this.diagnostics);
+        }
+        return build(name, modelId, enforceBoneCeiling(ordered), armSwingAxis, handSwingAxis);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -630,14 +638,19 @@ final class RigFileReader {
     private @NotNull RigLoadResult build(
             @NotNull String name,
             @NotNull String modelId,
-            @NotNull List<ParsedBone> ordered
+            @NotNull List<ParsedBone> ordered,
+            @NotNull ArmSwingAxis armSwingAxis,
+            @NotNull ArmSwingAxis handSwingAxis
     ) {
         try {
             final Rig.Builder builder = Rig.builder(
                     name, modelId, this.settings.rigBounds(), this.settings.profileBounds());
+            builder.armSwingAxis(armSwingAxis);
+            builder.handSwingAxis(handSwingAxis);
             for (final ParsedBone bone : ordered) {
                 builder.bone(bone.key(), bone.parentKey(), bone.physics());
             }
+
             return RigLoadResult.success(builder.build(), this.diagnostics);
         } catch (final IllegalArgumentException refused) {
             // Backstop, like the one in readPhysics: duplicates, unknown parents, ordering and the
@@ -646,6 +659,33 @@ final class RigFileReader {
             error(null, "was refused by the rig builder after loading: " + refused.getMessage()
                     + ". This is a loader defect, not a file one.");
             return RigLoadResult.failure(this.diagnostics);
+        }
+    }
+
+    private @NotNull ArmSwingAxis readArmSwingAxis(@NotNull Block top) {
+        final String value = text(top, "armswingaxis");
+        if (value == null || value.isBlank()) {
+            return ArmSwingAxis.PITCH;
+        }
+
+        try {
+            return ArmSwingAxis.parse(value);
+        } catch (IllegalArgumentException refused) {
+            error(null, refused.getMessage() + ".");
+            return ArmSwingAxis.PITCH;
+        }
+    }
+
+    private @NotNull ArmSwingAxis readHandSwingAxis(@NotNull Block top) {
+        final String value = text(top, "handswingaxis");
+        if (value == null || value.isBlank()) {
+            return ArmSwingAxis.PITCH;
+        }
+        try {
+            return ArmSwingAxis.parse(value);
+        } catch (IllegalArgumentException refused) {
+            error(null, refused.getMessage() + ".");
+            return ArmSwingAxis.PITCH;
         }
     }
 

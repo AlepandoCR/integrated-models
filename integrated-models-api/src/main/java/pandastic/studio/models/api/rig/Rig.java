@@ -3,6 +3,7 @@ package pandastic.studio.models.api.rig;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import pandastic.studio.models.api.locomotion.ArmSwingAxis;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,17 +43,23 @@ public final class Rig {
     private final @NotNull List<RigBone> bones;
     private final @NotNull Map<String, Integer> indexByName;
     private final int[] physicsBones;
+    private final @NotNull ArmSwingAxis armSwingAxis;
+    private final @NotNull ArmSwingAxis handSwingAxis;
 
     private Rig(
             @NotNull String name,
             @NotNull String modelId,
             @NotNull List<RigBone> bones,
-            @NotNull Map<String, Integer> indexByName
+            @NotNull Map<String, Integer> indexByName,
+            @NotNull ArmSwingAxis armSwingAxis,
+            @NotNull ArmSwingAxis handSwingAxis
     ) {
         this.name = name;
         this.modelId = modelId;
         this.bones = List.copyOf(bones);
         this.indexByName = Map.copyOf(indexByName);
+        this.armSwingAxis = armSwingAxis;
+        this.handSwingAxis = handSwingAxis;
 
         int physicsCount = 0;
         for (final RigBone bone : this.bones) {
@@ -118,6 +125,16 @@ public final class Rig {
         return this.modelId;
     }
 
+    /** The authored local axis used by the generic arm gait and attack swing. */
+    public @NotNull ArmSwingAxis armSwingAxis() {
+        return this.armSwingAxis;
+    }
+
+    /** The authored local axis used for the hand's stabilising motion. */
+    public @NotNull ArmSwingAxis handSwingAxis() {
+        return this.handSwingAxis;
+    }
+
     /** Every bone, in topological order: a bone's parent always precedes it. */
     public @NotNull List<RigBone> getBones() {
         return this.bones;
@@ -169,6 +186,8 @@ public final class Rig {
         private final @NotNull ProfileBounds profileBounds;
         private final @NotNull List<RigBone> bones = new ArrayList<>();
         private final @NotNull Map<String, Integer> indexByName = new HashMap<>();
+        private @NotNull ArmSwingAxis armSwingAxis = ArmSwingAxis.PITCH;
+        private @NotNull ArmSwingAxis handSwingAxis = ArmSwingAxis.PITCH;
 
         private Builder(
                 @NotNull String name,
@@ -186,6 +205,18 @@ public final class Rig {
             this.modelId = modelId;
             this.rigBounds = rigBounds;
             this.profileBounds = profileBounds;
+        }
+
+        /** Sets the authored local axis used for arm locomotion. */
+        public @NotNull Builder armSwingAxis(@NotNull ArmSwingAxis axis) {
+            this.armSwingAxis = axis;
+            return this;
+        }
+
+        /** Sets the authored local axis used for hand stabilisation. */
+        public @NotNull Builder handSwingAxis(@NotNull ArmSwingAxis axis) {
+            this.handSwingAxis = axis;
+            return this;
         }
 
         /** Adds a root bone with no physics — a hierarchy anchor for bones that do have some. */
@@ -269,7 +300,8 @@ public final class Rig {
                 throw new IllegalArgumentException("Rig '" + this.name + "' has no bones");
             }
             return new Rig(this.name, this.modelId, this.bones,
-                    Collections.unmodifiableMap(this.indexByName));
+                    Collections.unmodifiableMap(this.indexByName), this.armSwingAxis,
+                    this.handSwingAxis);
         }
     }
 }

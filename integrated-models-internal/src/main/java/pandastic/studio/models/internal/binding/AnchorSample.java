@@ -29,8 +29,11 @@ public final class AnchorSample {
     private double y;
     private double z;
     private float yawDegrees;
+    private float headYawDegrees;
+    private float pitchDegrees;
     private boolean sneaking;
     private boolean airborne;
+    private long attackSequence;
 
     /** Overwrites every field. Called from the owning region thread and nowhere else. */
     public void set(
@@ -38,15 +41,26 @@ public final class AnchorSample {
             double y,
             double z,
             float yawDegrees,
+            float headYawDegrees,
+            float pitchDegrees,
             boolean sneaking,
-            boolean airborne
+            boolean airborne,
+            long attackSequence
     ) {
         this.x = x;
         this.y = y;
         this.z = z;
         this.yawDegrees = yawDegrees;
+        this.headYawDegrees = headYawDegrees;
+        this.pitchDegrees = pitchDegrees;
         this.sneaking = sneaking;
         this.airborne = airborne;
+        this.attackSequence = attackSequence;
+    }
+
+    /** Compatibility overload for anchors that do not expose an attack signal. */
+    public void set(double x, double y, double z, float yawDegrees, boolean sneaking, boolean airborne) {
+        set(x, y, z, yawDegrees, yawDegrees, 0F, sneaking, airborne, 0L);
     }
 
     /** World x, in blocks. */
@@ -76,6 +90,14 @@ public final class AnchorSample {
         return this.yawDegrees;
     }
 
+    public float headYawDegrees() {
+        return this.headYawDegrees;
+    }
+
+    public float pitchDegrees() {
+        return this.pitchDegrees;
+    }
+
     /** Whether the anchor is crouched. A gait input, blended rather than snapped. */
     public boolean sneaking() {
         return this.sneaking;
@@ -84,6 +106,11 @@ public final class AnchorSample {
     /** Whether the anchor is off the ground. At full blend the walk cycle contributes nothing. */
     public boolean airborne() {
         return this.airborne;
+    }
+
+    /** Monotonic player arm-swing sequence observed with this sample. */
+    public long attackSequence() {
+        return this.attackSequence;
     }
 
     @Override

@@ -29,8 +29,9 @@ public interface AnchorFactory {
      */
     static @NotNull AnchorFactory entities(
             @NotNull Plugin plugin,
-            @NotNull RenderSettingsSource renderSettings
+            @NotNull RenderSettingsSource renderSettings,
+            @NotNull AttackTracker attacks
     ) {
-        return entity -> new EntityAnchor(plugin, entity, renderSettings);
+        return entity -> new EntityAnchor(plugin, entity, renderSettings, attacks);
     }
 }

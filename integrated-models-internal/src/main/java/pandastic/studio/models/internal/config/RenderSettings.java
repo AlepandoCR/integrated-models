@@ -42,7 +42,7 @@ public interface RenderSettings {
      */
     @ConfigValue(comment = "Pose updates sent per second. Capped at the client tick rate of 20, above which extra packets are discarded unseen. Lower is cheaper and, with a matched window, looks identical.")
     default int emissionHz() {
-        return 20;
+        return 10;
     }
 
     /**
@@ -55,7 +55,7 @@ public interface RenderSettings {
      */
     @ConfigValue(comment = "Smallest interpolation window in client ticks. Zero would mean 'snap', which is a different mode rather than a shorter window, so one is the floor.")
     default int minInterpolationTicks() {
-        return 1;
+        return 2;
     }
 
     /**

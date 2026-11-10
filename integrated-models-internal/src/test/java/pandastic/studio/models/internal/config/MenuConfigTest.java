@@ -87,7 +87,7 @@ class MenuConfigTest {
                 () -> assertEquals(77, service.menu().layout().buttonWidth()),
                 // Untouched keys keep their declared defaults, which is what makes a partial file legal.
                 () -> assertEquals(8, service.menu().animation().pageSize()),
-                () -> assertEquals(20, service.snapshot().render().emissionHz()));
+                () -> assertEquals(10, service.snapshot().render().emissionHz()));
     }
 
     @Test

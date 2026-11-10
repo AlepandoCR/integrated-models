@@ -19,7 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The model picker: a paged list of model ids, a thumbnail, and the four actions the original had.
+ * The model picker: a paged list of model ids and the actions the original had.
  *
  * <h2>The primitive, and why</h2>
  * A <strong>single-option input plus action buttons</strong>, which is the shape the original screen
@@ -32,20 +32,7 @@ import java.util.List;
  * is not that API. It would also mean a second input convention in one plugin for no gain — a picker is
  * not continuous adjustment, it is one choice and one commit, which a form does well.
  *
- * <h2>What is lost against the original, and why</h2>
- * <ul>
- *   <li><strong>The live 3D preview.</strong> There is no server-side viewport: no packet places a posed
- *       model inside a dialog. The honest substitute is a flat, pre-rendered picture, selected per model
- *       id through the item model component and supplied by a resource pack. Configure
- *       {@code picker.thumbnailItemModel} and ship the pack, or leave it blank and get a plain item.</li>
- *   <li><strong>The preview following the selection.</strong> The server is never told that an input
- *       changed — a dialog reports its inputs once, on a click — so the thumbnail cannot track the
- *       chooser. It shows what has been <em>committed</em>, and the preview button is how a player
- *       commits a look without wearing it. One round-trip instead of none.</li>
- *   <li><strong>Scrolling.</strong> The chooser is cycled rather than scrolled, so a long list is paged
- *       instead. {@code picker.pageSize} is the trade between clicks inside a page and clicks between
- *       pages.</li>
- * </ul>
+ * <p>The chooser is cycled rather than scrolled, so a long list is paged instead.
  *
  * <h2>The id that comes back is not trusted</h2>
  * A click carries the inputs as the client composed them, so the model id in a Wear press is a string
@@ -128,12 +115,7 @@ final class ModelPickerMenu extends MenuScreen {
                 MenuText.placeholder("model", this.worn));
     }
 
-    /**
-     * The stand-in for the original's 3D viewport.
-     *
-     * @return the thumbnail, or {@code null} when nothing is selected or the material is gone
-     */
-    @DialogBody(id = "preview", order = 20)
+    /** Retained as a compatibility seam for presenters; dialog registration intentionally does not expose it. */
     @Nullable ItemDialogBody preview() {
         if (this.previewed == null) {
             return null;
@@ -195,7 +177,7 @@ final class ModelPickerMenu extends MenuScreen {
                 : button(this.settings.picker().wearLabel(), this.settings.picker().wearTooltip());
     }
 
-    @DialogButton(id = "refresh", order = 20)
+    /** Retained for tests and extensions; the thumbnail refresh button is no longer registered. */
     @Nullable ActionButton.Builder refreshButton() {
         return this.models.isEmpty()
                 ? null
@@ -264,15 +246,7 @@ final class ModelPickerMenu extends MenuScreen {
         this.service.openPicker(this.viewer);
     }
 
-    /**
-     * Redraws the screen with the selection previewed.
-     *
-     * <p>The only way a thumbnail can follow a chooser, because the server is not told when a chooser
-     * moves.
-     *
-     * @param context the click
-     */
-    @DialogButtonHandler(buttonId = "refresh")
+    /** Retained for callers that explicitly request a picker refresh; it is no longer a dialog action. */
     void onRefresh(@NotNull DialogContext context) {
         if (!isViewer(context)) {
             return;

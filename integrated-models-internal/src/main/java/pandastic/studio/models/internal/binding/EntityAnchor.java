@@ -7,6 +7,8 @@ import kr.toxicity.model.api.data.renderer.ModelRenderer;
 import kr.toxicity.model.api.tracker.EntityTracker;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -61,6 +63,7 @@ public final class EntityAnchor implements ModelAnchor {
     private final @NotNull Plugin plugin;
     private final @NotNull Entity entity;
     private final @NotNull RenderSettingsSource renderSettings;
+    private final @NotNull AttackTracker attacks;
 
     /**
      * @param renderSettings where a bound sink reads its dirty epsilon from, once per emission. A
@@ -69,11 +72,13 @@ public final class EntityAnchor implements ModelAnchor {
     public EntityAnchor(
             @NotNull Plugin plugin,
             @NotNull Entity entity,
-            @NotNull RenderSettingsSource renderSettings
+            @NotNull RenderSettingsSource renderSettings,
+            @NotNull AttackTracker attacks
     ) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.entity = Objects.requireNonNull(entity, "entity");
         this.renderSettings = Objects.requireNonNull(renderSettings, "renderSettings");
+        this.attacks = Objects.requireNonNull(attacks, "attacks");
     }
 
     @Override
@@ -88,12 +93,15 @@ public final class EntityAnchor implements ModelAnchor {
                 this.entity.getX(),
                 this.entity.getY(),
                 this.entity.getZ(),
+                this.entity instanceof LivingEntity living ? living.getBodyYaw() : this.entity.getYaw(),
                 this.entity.getYaw(),
+                this.entity instanceof LivingEntity living ? living.getEyeLocation().getPitch() : 0F,
                 this.entity.isSneaking(),
                 // The server updates this when the entity moves and does not recompute it otherwise,
                 // which is exactly the semantics the gait's airborne blend wants: "is it being held up
                 // by something", not "is there a block underneath right now".
-                !this.entity.isOnGround());
+                !this.entity.isOnGround(),
+                this.entity instanceof Player player ? this.attacks.sequence(player) : 0L);
         return true;
     }
 
@@ -142,7 +150,15 @@ public final class EntityAnchor implements ModelAnchor {
                                 + " its file is in BetterModel's model folder."));
         final EntityTracker tracker = renderer.create(BukkitAdapter.adapt(this.entity));
         // Takes ownership of the tracker, including closing it if the rig cannot be bound.
-        return TrackerRenderBinding.bind(rig, tracker, this.renderSettings);
+        final TrackerRenderBinding binding = TrackerRenderBinding.bind(rig, tracker, this.renderSettings);
+        if (this.entity instanceof Player player
+                && !tracker.registry().spawn(BukkitAdapter.adapt(player))) {
+            binding.close();
+            throw new IllegalStateException(
+                    "BetterModel could not spawn rig '" + rig.getName() + "' for player "
+                            + player.getName() + ".");
+        }
+        return binding;
     }
 
     @Override
