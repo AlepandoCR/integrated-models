@@ -36,6 +36,8 @@ import pandastic.studio.models.internal.rig.RigDiagnostic;
 import pandastic.studio.models.internal.rig.RigLoadResult;
 import pandastic.studio.models.internal.rig.RigLoadSettings;
 import pandastic.studio.models.internal.rig.RigLoader;
+import pandastic.studio.models.internal.rig.ModelBoneSource;
+import pandastic.studio.models.internal.rig.RigFactory;
 import pandastic.studio.models.internal.sim.AsyncSimulationScheduler;
 import pandastic.studio.models.internal.sim.ComponentSimulationLogger;
 import pandastic.studio.models.internal.sim.SimulationClock;
@@ -144,6 +146,7 @@ final class ModelRuntime {
     private final @NotNull DecorationBinderImpl decorations;
     private final @NotNull VehicleBinderImpl vehicles;
     private final @NotNull AiRuntime ai;
+    private final @NotNull RigFactory rigFactory;
 
     private final @NotNull Map<String, Rig> rigs = new ConcurrentHashMap<>();
 
@@ -283,6 +286,7 @@ final class ModelRuntime {
         this.vehicles = new VehicleBinderImpl(hosts, VehicleVisualFactory.binding(this.models),
                 this.vehicleSettings, clock, simulationLogger);
 
+        this.rigFactory = RigFactory.of(this::rigs, ModelBoneSource.renderer(), this::rigLoadSettings);
         loadRigs();
     }
 
@@ -488,6 +492,26 @@ final class ModelRuntime {
     }
 
     /**
+     * Resolves the rig a player wardrobe should use for a renderer model.
+     *
+     * <p>Authored rigs win over the pass-through rig derived from the renderer. Diagnostics are logged
+     * here, where the runtime has the policy for operator-facing output, rather than from a player click.
+     */
+    @NotNull Rig rigForModel(@NotNull String modelId) {
+        final RigLoadResult result = this.rigFactory.rigFor(modelId);
+        final ConfigSnapshot.DiagnosticsOptions options = this.configs.snapshot().diagnostics();
+        if (options.logRigDiagnostics()) {
+            for (final RigDiagnostic diagnostic : result.diagnostics()) {
+                if (options.shouldLog(diagnostic.severity())) {
+                    this.logger.warn(Component.text(diagnostic.format(),
+                            diagnostic.isError() ? NamedTextColor.RED : NamedTextColor.YELLOW));
+                }
+            }
+        }
+        return result.rigOrThrow();
+    }
+
+    /**
      * Re-reads every configuration file and every rig, and tells every layer that owns a repeating task
      * about it.
      *
@@ -534,6 +558,7 @@ final class ModelRuntime {
         }
 
         this.rigs.clear();
+        this.rigFactory.invalidateAll();
         loadRigs();
         return result;
     }

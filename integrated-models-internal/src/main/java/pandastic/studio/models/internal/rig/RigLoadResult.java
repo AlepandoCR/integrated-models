@@ -15,6 +15,10 @@ import java.util.StringJoiner;
  * What came out of reading one rig file: the rig, or nothing, and everything the loader noticed on
  * the way.
  *
+ * <p>Also what {@link RigFactory} answers with, for the same two reasons: a derivation can fail for
+ * reasons that are the model's rather than the caller's, and a caller logging the outcome should not have
+ * to care whether the rig came from a file or from the model itself.
+ *
  * <p>The diagnostics are part of the result rather than a side effect, because they outnumber the
  * outcome in usefulness. A rig that loaded is only interesting until it misbehaves, at which point the
  * three values that got clamped are the whole explanation — and a loader that had logged them to a

@@ -1,6 +1,7 @@
 package pandastic.studio.models.internal.binding;
 
 import org.junit.jupiter.api.Test;
+import pandastic.studio.models.api.binding.BindingOptions;
 import pandastic.studio.models.api.physics.DriverBounds;
 import pandastic.studio.models.api.physics.PhysicsDriver;
 import pandastic.studio.models.api.rig.Rig;
@@ -31,6 +32,17 @@ class RiggedModelImplTest {
 
     private static final float TOLERANCE = 1.0E-6F;
 
+    /**
+     * A server-wide teleport filter tighter than anything shipped.
+     *
+     * <p>Deliberately not the shipped 1.5/6: a test that used the defaults could not tell a binding
+     * that read the configuration it was given from one that ignored it and agreed by accident.
+     */
+    private static final DriverBounds TIGHT_SERVER_WIDE = new DriverBounds(0.37F, 2.9F);
+
+    /** Looser than anything shipped, and about what a projectile needs: an arrow is roughly 3. */
+    private static final DriverBounds PROJECTILE_BOUNDS = new DriverBounds(4.25F, 7.5F);
+
     private final Rig rig = BindingFixtures.rig();
     private final BindingFixtures.Journal journal = new BindingFixtures.Journal();
     private final FakeAnchor anchor = new FakeAnchor(this.journal);
@@ -58,9 +70,41 @@ class RiggedModelImplTest {
             LocomotionStageSource locomotion,
             SimulationSettingsSource simulationSettings
     ) {
+        return model(locomotion, simulationSettings, BindingOptions.defaults());
+    }
+
+    private RiggedModelImpl model(
+            LocomotionStageSource locomotion,
+            SimulationSettingsSource simulationSettings,
+            BindingOptions options
+    ) {
         final Consumer<RiggedModelImpl> onStopped = ignored -> this.stopNotifications.incrementAndGet();
         return new RiggedModelImpl(this.rig, this.anchor, this.loop, simulationSettings,
-                this.bindingSource, locomotion, onStopped);
+                this.bindingSource, locomotion, options, onStopped);
+    }
+
+    /** A model on a deliberately tight server-wide filter, bound with {@code options}. */
+    private RiggedModelImpl modelOn(DriverBounds serverWide, BindingOptions options) {
+        return model(LocomotionStageSource.NONE,
+                SimulationSettingsSource.fixed(BindingFixtures.simulationSettings(serverWide)),
+                options);
+    }
+
+    /** Spawns, seeds the sampler at the origin, then moves by one delta and samples it. */
+    private PhysicsDriver publishedAfterMoving(
+            RiggedModelImpl model,
+            double deltaX,
+            double deltaY,
+            double deltaZ
+    ) {
+        this.anchor.moveTo(0D, 64D, 0D, 0F);
+        model.spawn();
+        // The first sample seeds; a delta measured across a bind describes nothing physical.
+        this.anchor.tick();
+
+        this.anchor.moveTo(deltaX, 64D + deltaY, deltaZ, 0F);
+        this.anchor.tick();
+        return model.driver().current();
     }
 
     // ------------------------------------------------------------------ spawn
@@ -393,6 +437,103 @@ class RiggedModelImplTest {
         // Filtered to zero. A position delta is indistinguishable from a teleport unless whoever
         // differenced it says so, and feeding a teleport to the wind term launches the whole rig.
         assertEquals(0F, model.driver().current().forwardSpeed(), TOLERANCE);
+    }
+
+    // -------------------------------------------------- per-binding driver bounds
+
+    /**
+     * An arrow's genuine motion, published rather than discarded.
+     *
+     * <p>The regression test for the whole feature. A projectile binds fine — nothing in this layer
+     * narrows to a living entity — but an arrow at full draw covers about three blocks in a tick, and
+     * against a player-sized server-wide ceiling every one of those ticks is classified as a teleport.
+     * The model then flies correctly, because the renderer moves it, while its physics is told
+     * {@code STILL} forever: no feathers streaming back, no ribbon reacting, no error and no log line.
+     *
+     * <p>The pair with {@link #aFastEntityOnTheServerWideFilterIsStillTreatedAsTeleporting()} is the
+     * assertion. One differs from the other in the options and nothing else, and the published forward
+     * speed goes from zero to the real three blocks.
+     */
+    @Test
+    void aBindingWithARaisedCeilingPublishesAFastEntitysRealMotion() {
+        final RiggedModelImpl model = modelOn(TIGHT_SERVER_WIDE,
+                BindingOptions.ofDriverBounds(PROJECTILE_BOUNDS));
+
+        final PhysicsDriver published = publishedAfterMoving(model, 0D, 0D, 3.1D);
+
+        assertAll(
+                () -> assertEquals(3.1F, published.forwardSpeed(), TOLERANCE),
+                () -> assertTrue(published.isMoving(),
+                        "the secondary physics has to learn the thing it hangs off is moving"));
+    }
+
+    @Test
+    void aFastEntityOnTheServerWideFilterIsStillTreatedAsTeleporting() {
+        final RiggedModelImpl model = modelOn(TIGHT_SERVER_WIDE, BindingOptions.defaults());
+
+        final PhysicsDriver published = publishedAfterMoving(model, 0D, 0D, 3.1D);
+
+        // Unchanged, and deliberately so: the server-wide number is what a player's teleport is
+        // measured against, which is why raising it was never the fix.
+        assertEquals(0F, published.forwardSpeed(), TOLERANCE);
+    }
+
+    @Test
+    void aBindingThatStatesNothingGetsTheSuppliedServerWideBounds() {
+        final RiggedModelImpl model = modelOn(TIGHT_SERVER_WIDE, BindingOptions.defaults());
+
+        // 0.3 is under the supplied 0.37 and over nothing else in sight: it would be discarded by a
+        // stricter default and passed by the shipped 1.5, so only the supplied value explains it.
+        final PhysicsDriver published = publishedAfterMoving(model, 0D, 0D, 0.3D);
+
+        assertAll(
+                () -> assertEquals(0.3F, published.forwardSpeed(), TOLERANCE),
+                () -> assertTrue(model.options().driverBounds().isEmpty(),
+                        "and it must still be recorded as having stated nothing"));
+    }
+
+    @Test
+    void theHorizontalCeilingIsIndependentOfTheVerticalOne() {
+        // Loose horizontally, tighter than gravity vertically — a projectile that should stream behind
+        // its own flight but not react to falling.
+        final RiggedModelImpl model = modelOn(TIGHT_SERVER_WIDE,
+                BindingOptions.ofDriverBounds(new DriverBounds(4.25F, 0.09F)));
+
+        final PhysicsDriver published = publishedAfterMoving(model, 0D, -0.5D, 3.1D);
+
+        assertAll(
+                () -> assertEquals(3.1F, published.forwardSpeed(), TOLERANCE),
+                () -> assertEquals(0F, published.verticalSpeed(), TOLERANCE));
+    }
+
+    @Test
+    void theVerticalCeilingIsIndependentOfTheHorizontalOne() {
+        // The other way round, because one ceiling quietly standing in for both would pass the test
+        // above on its own.
+        final RiggedModelImpl model = modelOn(TIGHT_SERVER_WIDE,
+                BindingOptions.ofDriverBounds(new DriverBounds(0.09F, 5.5F)));
+
+        final PhysicsDriver published = publishedAfterMoving(model, 0D, -3.9D, 0.5D);
+
+        assertAll(
+                () -> assertEquals(-3.9F, published.verticalSpeed(), TOLERANCE),
+                () -> assertEquals(0F, published.forwardSpeed(), TOLERANCE));
+    }
+
+    @Test
+    void aGenuineTeleportIsStillDiscardedAtTheRaisedCeiling() {
+        final RiggedModelImpl model = modelOn(TIGHT_SERVER_WIDE,
+                BindingOptions.ofDriverBounds(PROJECTILE_BOUNDS));
+
+        // A portal, a /tp, a respawn. The point of the per-binding ceiling is that it is still a
+        // ceiling: feeding this to the wind term launches every bone in the rig at once, and the chain
+        // then takes a second to crawl back from its limits.
+        final PhysicsDriver published = publishedAfterMoving(model, 0D, 180D, 420D);
+
+        assertAll(
+                () -> assertEquals(0F, published.forwardSpeed(), TOLERANCE),
+                () -> assertEquals(0F, published.verticalSpeed(), TOLERANCE),
+                () -> assertFalse(published.isMoving()));
     }
 
     @Test

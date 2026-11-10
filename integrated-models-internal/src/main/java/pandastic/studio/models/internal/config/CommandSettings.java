@@ -5,7 +5,11 @@ import pandastic.studio.core.service.api.config.ConfigValue;
 import pandastic.studio.core.service.api.config.Configurable;
 
 /**
- * Declaration of {@code command.yml}: every line the reload command says back to whoever typed it.
+ * Declaration of {@code command.yml}: every line a command of this plugin says back to whoever typed it.
+ *
+ * <p>Two commands exist, and the file has a section each. {@code reload.*} is the operator's entry point
+ * into the hot-reload machinery; {@code menu.*} is the player-facing one that opens the model menu, which
+ * has exactly one thing to say — a dialog cannot be shown to a sender that is not a player.
  *
  * <h2>Why the whole reply is configuration</h2>
  * For the reason {@link MenuSettings} gives about its labels, with one addition. A command's reply is
@@ -45,6 +49,13 @@ import pandastic.studio.core.service.api.config.Configurable;
  */
 @Configurable(name = "CommandConfig", format = ConfigFormat.YAML)
 public interface CommandSettings {
+
+    /** Reply sent when the player menu command is used by a non-player sender. */
+    @ConfigValue(fieldName = "menu.notPlayerMessage",
+            comment = "Reply sent when the model menu command is used from the console. MiniMessage.")
+    default String menuNotPlayerMessage() {
+        return "<red>Only players can open the model menu.";
+    }
 
     /**
      * The line sent the moment a reload is accepted, before any file is read.

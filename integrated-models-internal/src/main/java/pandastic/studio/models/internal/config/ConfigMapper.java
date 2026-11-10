@@ -1655,6 +1655,7 @@ public final class ConfigMapper {
     private static void checkCommand(@NotNull CommandSettings command, @NotNull ConfigChecks checks) {
         final ConfigFile file = ConfigFile.COMMAND;
 
+        checks.text(file, "menu.notPlayerMessage", command.menuNotPlayerMessage());
         checks.optionalText(file, "reload.startedMessage", command.reloadStartedMessage());
         checks.text(file, "reload.appliedMessage", command.reloadAppliedMessage());
         checks.optionalText(file, "reload.rebuildMessage", command.reloadRebuildMessage());
@@ -2254,6 +2255,7 @@ public final class ConfigMapper {
             @NotNull CommandSettings command
     ) {
         return new pandastic.studio.models.internal.command.CommandSettings(
+                command.menuNotPlayerMessage(),
                 command.reloadStartedMessage(),
                 command.reloadAppliedMessage(),
                 command.reloadRebuildMessage(),

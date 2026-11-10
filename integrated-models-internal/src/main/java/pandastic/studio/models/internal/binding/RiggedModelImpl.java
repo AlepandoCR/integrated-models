@@ -2,6 +2,7 @@ package pandastic.studio.models.internal.binding;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import pandastic.studio.models.api.binding.BindingOptions;
 import pandastic.studio.models.api.binding.RiggedModel;
 import pandastic.studio.models.api.locomotion.GaitState;
 import pandastic.studio.models.api.rig.Rig;
@@ -100,6 +101,15 @@ import java.util.function.Consumer;
  * state machine that has to decide what a second spawn does with a sink whose per-bone transformers were
  * cached against a tracker that no longer exists, and every answer to that is a binding that looks live
  * and writes nowhere.
+ *
+ * <h2>What a binding may differ about</h2>
+ * One thing, so far: the teleport filter its sampler measures movement against. It is fixed for the
+ * handle's life because it is wired into the sampler at construction, and it is wired in as a
+ * <em>source</em> rather than as a value so that a binding which stated nothing keeps following the
+ * live configuration; see {@link DriverBoundsOverride}. Everything else — the solver, the cadence, the
+ * sample period — stays server-wide, and the simulation is deliberately handed the unmodified
+ * configuration: {@code driverBounds} is the only thing in that snapshot the sampler reads and the only
+ * thing a binding can change, so nothing else sees a derived view of its settings.
  */
 public final class RiggedModelImpl implements RiggedModel {
 
@@ -117,6 +127,9 @@ public final class RiggedModelImpl implements RiggedModel {
     private final @NotNull BindingSettingsSource bindingSettings;
     private final @NotNull LocomotionStageSource locomotion;
 
+    /** What this binding stated about itself; {@link BindingOptions#defaults()} if it stated nothing. */
+    private final @NotNull BindingOptions options;
+
     /** Told once, when this model has finished tearing down. See {@link ModelBinderImpl}. */
     private final @NotNull Consumer<RiggedModelImpl> onStopped;
 
@@ -133,6 +146,10 @@ public final class RiggedModelImpl implements RiggedModel {
      *
      * <p>Region-confined, like {@link #sample}, which is why it is reset in {@link #spawn()} — on the
      * owning thread — and never in the teardown, which can run anywhere.
+     *
+     * <p>Built over {@link DriverBoundsOverride#sourceFor} rather than over the server-wide source
+     * directly. That is the one place this binding's own teleport filter, if it stated one, enters the
+     * pipeline — and when it stated none the two are the same object.
      */
     private final @NotNull DriverSampler driverSampler;
 
@@ -162,6 +179,8 @@ public final class RiggedModelImpl implements RiggedModel {
     private long scheduledPeriodTicks;
 
     /**
+     * A model that differs about nothing, driven entirely by the server's configuration.
+     *
      * @param anchor             where this model is, and the only thing allowed to read it
      * @param loop               the single off-tick task every simulation is stepped from
      * @param simulationSettings where the solver, cadence and teleport thresholds come from
@@ -178,14 +197,39 @@ public final class RiggedModelImpl implements RiggedModel {
             @NotNull LocomotionStageSource locomotion,
             @NotNull Consumer<RiggedModelImpl> onStopped
     ) {
+        this(rig, anchor, loop, simulationSettings, bindingSettings, locomotion,
+                BindingOptions.defaults(), onStopped);
+    }
+
+    /**
+     * @param anchor             where this model is, and the only thing allowed to read it
+     * @param loop               the single off-tick task every simulation is stepped from
+     * @param simulationSettings where the solver, cadence and teleport thresholds come from
+     * @param bindingSettings    where the sampler's period comes from
+     * @param locomotion         the walk cycle for this rig, or one that answers null
+     * @param options            what this binding differs about, or {@link BindingOptions#defaults()}
+     * @param onStopped          told once when this model has torn down, whether it ever spawned or not
+     */
+    public RiggedModelImpl(
+            @NotNull Rig rig,
+            @NotNull ModelAnchor anchor,
+            @NotNull SimulationLoop loop,
+            @NotNull SimulationSettingsSource simulationSettings,
+            @NotNull BindingSettingsSource bindingSettings,
+            @NotNull LocomotionStageSource locomotion,
+            @NotNull BindingOptions options,
+            @NotNull Consumer<RiggedModelImpl> onStopped
+    ) {
         this.rig = Objects.requireNonNull(rig, "rig");
         this.anchor = Objects.requireNonNull(anchor, "anchor");
         this.loop = Objects.requireNonNull(loop, "loop");
         this.simulationSettings = Objects.requireNonNull(simulationSettings, "simulationSettings");
         this.bindingSettings = Objects.requireNonNull(bindingSettings, "bindingSettings");
         this.locomotion = Objects.requireNonNull(locomotion, "locomotion");
+        this.options = Objects.requireNonNull(options, "options");
         this.onStopped = Objects.requireNonNull(onStopped, "onStopped");
-        this.driverSampler = new DriverSampler(this.simulationSettings);
+        this.driverSampler =
+                new DriverSampler(DriverBoundsOverride.sourceFor(this.simulationSettings, options));
     }
 
     @Override
@@ -468,6 +512,16 @@ public final class RiggedModelImpl implements RiggedModel {
     /** Where this model is. */
     public @NotNull ModelAnchor anchor() {
         return this.anchor;
+    }
+
+    /**
+     * What this binding stated about itself, which is fixed for its life.
+     *
+     * <p>What it stated, not what it resolved to: an absent override is still absent here, because the
+     * value it defaults to belongs to the live configuration and changes under it.
+     */
+    public @NotNull BindingOptions options() {
+        return this.options;
     }
 
     /** This model's physics, or {@code null} if it is not spawned. */

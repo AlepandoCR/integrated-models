@@ -2,6 +2,7 @@ package pandastic.studio.models.internal.binding;
 
 import org.bukkit.entity.Entity;
 import org.jetbrains.annotations.NotNull;
+import pandastic.studio.models.api.binding.BindingOptions;
 import pandastic.studio.models.api.binding.ModelBinder;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.internal.sim.SimulationLoop;
@@ -38,6 +39,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * The entity in {@link #bind(Rig, Entity)} is handed straight to an {@link AnchorFactory} and never
  * touched. Everything with a scheduler or a world behind it lives on the far side of that seam, which is
  * what makes this class — the one that owns the shutdown path — something a test can construct.
+ *
+ * <h2>Four overloads, one of them real</h2>
+ * Entity or anchor, with options or without; the anchor-and-options form is the only one with a body.
+ * The options themselves are not interpreted here — this class neither reads nor validates them, it
+ * hands them to the model, which is where the one thing they currently say has an effect. Collapsing the
+ * defaults into {@link BindingOptions#defaults()} at the two entry points rather than passing nulls
+ * around is what keeps "nothing stated" a value the rest of the layer can treat uniformly.
  */
 public final class ModelBinderImpl implements ModelBinder {
 
@@ -83,22 +91,47 @@ public final class ModelBinderImpl implements ModelBinder {
 
     @Override
     public @NotNull RiggedModelImpl bind(@NotNull Rig rig, @NotNull Entity entity) {
+        return bind(rig, entity, BindingOptions.defaults());
+    }
+
+    @Override
+    public @NotNull RiggedModelImpl bind(
+            @NotNull Rig rig,
+            @NotNull Entity entity,
+            @NotNull BindingOptions options
+    ) {
         Objects.requireNonNull(entity, "entity");
-        return bind(rig, this.anchors.anchorFor(entity));
+        return bind(rig, this.anchors.anchorFor(entity), options);
     }
 
     /**
-     * Binds {@code rig} to an arbitrary anchor.
+     * Binds {@code rig} to an arbitrary anchor on the server's own configuration.
      *
-     * <p>The form the entity overload is written in terms of, and the form a model anchored to something
-     * other than an entity will use. Not part of the published API, because a {@link ModelAnchor} is
-     * this plugin's own contract about which thread may read what.
+     * <p>The form a model anchored to something other than an entity will use. Not part of the published
+     * API, because a {@link ModelAnchor} is this plugin's own contract about which thread may read what.
      *
      * @throws IllegalStateException if the rig cannot bind to its model, naming every bone that failed
      */
     public @NotNull RiggedModelImpl bind(@NotNull Rig rig, @NotNull ModelAnchor anchor) {
+        return bind(rig, anchor, BindingOptions.defaults());
+    }
+
+    /**
+     * Binds {@code rig} to an arbitrary anchor, with whatever {@code options} states about it.
+     *
+     * <p>The form every other one is written in terms of, so the offline check and the registration
+     * happen in exactly one place however a caller got here.
+     *
+     * @throws IllegalStateException if the rig cannot bind to its model, naming every bone that failed
+     */
+    public @NotNull RiggedModelImpl bind(
+            @NotNull Rig rig,
+            @NotNull ModelAnchor anchor,
+            @NotNull BindingOptions options
+    ) {
         Objects.requireNonNull(rig, "rig");
         Objects.requireNonNull(anchor, "anchor");
+        Objects.requireNonNull(options, "options");
 
         // Before anything exists. A rig whose bone names no longer match its model is a content error,
         // and the person who can fix it is reading the log — so it has to fail here, with every broken
@@ -107,7 +140,7 @@ public final class ModelBinderImpl implements ModelBinder {
 
         final RiggedModelImpl model = new RiggedModelImpl(
                 rig, anchor, this.loop, this.simulationSettings, this.bindingSettings, this.locomotion,
-                this.bound::remove);
+                options, this.bound::remove);
         this.bound.add(model);
         return model;
     }

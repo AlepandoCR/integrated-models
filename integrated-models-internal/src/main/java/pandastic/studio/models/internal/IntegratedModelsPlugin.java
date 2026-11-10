@@ -14,10 +14,20 @@ import pandastic.studio.models.api.decoration.DecorationBinder;
 import pandastic.studio.models.api.model.ModelManager;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.vehicle.VehicleBinder;
+import pandastic.studio.models.internal.command.MenuCommand;
 import pandastic.studio.models.internal.command.ReloadCommand;
 import pandastic.studio.models.internal.command.ReloadReport;
 import pandastic.studio.models.internal.config.ConfigReloadResult;
 import pandastic.studio.models.internal.model.ModelManagerImpl;
+import pandastic.studio.models.internal.menu.EntitySchedulerMenuPresenter;
+import pandastic.studio.models.internal.menu.LibraryModelCatalogue;
+import pandastic.studio.models.internal.menu.MenuService;
+import pandastic.studio.models.internal.menu.MenuSessions;
+import pandastic.studio.models.internal.menu.ModelLibrary;
+import pandastic.studio.models.internal.menu.RiggedModelWardrobe;
+import pandastic.studio.models.internal.menu.WardrobeRendering;
+import pandastic.studio.models.internal.menu.PaperMenuSurface;
+import pandastic.studio.models.internal.sim.SimulationClock;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
 import pandastic.studio.models.internal.sim.SimulationLoop;
 
@@ -54,6 +64,7 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
 
     private @Nullable ModelManager modelManager;
     private @Nullable ModelRuntime runtime;
+    private @Nullable MenuService menu;
 
     @Override
     public void onLoad() {
@@ -65,6 +76,16 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
     public void onEnable() {
         this.runtime = ModelRuntime.create(this);
         this.runtime.start();
+        this.menu = new MenuService(
+                runtime().configs()::menu,
+                new PaperMenuSurface(getComponentLogger()),
+                new MenuSessions(runtime().configs()::menu, SimulationClock.SYSTEM),
+                new LibraryModelCatalogue(ModelLibrary.renderer()),
+                new RiggedModelWardrobe(runtime().models(), runtime()::rigForModel,
+                        WardrobeRendering.trackers(),
+                        (message, thrown) -> getComponentLogger()
+                                .error(Component.text(message, NamedTextColor.RED), thrown)),
+                new EntitySchedulerMenuPresenter(this));
 
         // Published so a consumer can reach the API without naming this class. getInstance() still
         // works, but a service lookup is what survives this plugin being reloaded or replaced.
@@ -80,6 +101,10 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
         if (this.runtime != null) {
             this.runtime.shutdown();
             this.runtime = null;
+        }
+        if (this.menu != null) {
+            this.menu.shutdown();
+            this.menu = null;
         }
         getServer().getServicesManager().unregisterAll(this);
     }
@@ -161,11 +186,12 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
      * has no {@code commands:} block and must not grow one, or the same label would be claimed twice.
      *
      * <h2>What is wired into what</h2>
-     * The command owns none of this behaviour; it owns the decisions a reload needs that the runtime
-     * cannot make. So it is handed, in order: where the reply text comes from — the live configuration,
-     * read once per invocation; what a reload <em>is</em>, which is {@link #reloadConfiguration()} plus
-     * the rig count it produced; somewhere to run that which is not a region thread; and somewhere for a
-     * failure's stack trace to go, since the operator only gets the sentence.
+     * The commands own none of this behaviour. The reload command is handed, in order: where the reply
+     * text comes from — the live configuration, read once per invocation; what a reload <em>is</em>,
+     * which is {@link #reloadConfiguration()} plus the rig count it produced; somewhere to run that
+     * which is not a region thread; and somewhere for a failure's stack trace to go. The menu command
+     * receives the same live command settings for its non-player response and the already assembled menu
+     * service for player navigation.
      *
      * <p>The two halves of {@link ReloadReport} are read in that order on purpose: the rig count is
      * meaningful only after the reload that re-read the rigs, and it is taken on the same thread
@@ -180,8 +206,14 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
                         .error(Component.text(message, NamedTextColor.RED), thrown));
 
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
-                event.registrar().register(ReloadCommand.NAME, ReloadCommand.DESCRIPTION,
-                        ReloadCommand.ALIASES, reload));
+                {
+                    event.registrar().register(ReloadCommand.NAME, ReloadCommand.DESCRIPTION,
+                            ReloadCommand.ALIASES, reload);
+                    event.registrar().register(MenuCommand.NAME, MenuCommand.DESCRIPTION,
+                            MenuCommand.ALIASES, new MenuCommand(
+                                    Objects.requireNonNull(this.menu, "Menu service is not initialized"),
+                                    runtime().configs()::command));
+                });
     }
 
     private @NotNull ModelRuntime runtime() {

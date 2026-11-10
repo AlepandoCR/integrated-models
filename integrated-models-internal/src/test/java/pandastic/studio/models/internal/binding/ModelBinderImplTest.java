@@ -1,6 +1,8 @@
 package pandastic.studio.models.internal.binding;
 
 import org.junit.jupiter.api.Test;
+import pandastic.studio.models.api.binding.BindingOptions;
+import pandastic.studio.models.api.physics.DriverBounds;
 import pandastic.studio.models.api.rig.PhysicsKind;
 import pandastic.studio.models.api.rig.PhysicsProfile;
 import pandastic.studio.models.api.rig.Rig;
@@ -131,6 +133,46 @@ class ModelBinderImplTest {
 
         // Nothing was handed out, so nothing may be in the list the shutdown path walks.
         assertEquals(0, binder.size());
+    }
+
+    // -------------------------------------------------------------- the options
+
+    @Test
+    void bindWithoutOptionsStatesNothing() {
+        final RiggedModelImpl model = binder().bind(BindingFixtures.rig(), new FakeAnchor(this.journal));
+
+        // The two-argument form has to keep meaning exactly what it meant: everything from the server's
+        // own configuration, and absent rather than a snapshot of it, so a reload still reaches it.
+        assertAll(
+                () -> assertSame(BindingOptions.defaults(), model.options()),
+                () -> assertTrue(model.options().driverBounds().isEmpty()));
+    }
+
+    @Test
+    void bindCarriesTheOptionsThroughToTheModel() {
+        final BindingOptions options =
+                BindingOptions.ofDriverBounds(new DriverBounds(4.25F, 7.5F));
+
+        final RiggedModelImpl model =
+                binder().bind(BindingFixtures.rig(), new FakeAnchor(this.journal), options);
+
+        assertSame(options, model.options(), "the binder must not interpret or rebuild them");
+    }
+
+    @Test
+    void theOfflineCheckStillRunsFirstWhateverTheOptionsSay() {
+        final Rig rig = Rig.builder("broken", "test-model",
+                        BindingFixtures.RIG_BOUNDS, BindingFixtures.PROFILE_BOUNDS)
+                .root("body")
+                .bone("tail", "body", pendulum())
+                .build();
+        final BindingOptions options =
+                BindingOptions.ofDriverBounds(new DriverBounds(4.25F, 7.5F));
+
+        // Every entry point funnels into one body, so a rig that cannot bind is refused the same way
+        // and nothing is tracked — however the caller got in.
+        assertThrows(IllegalStateException.class,
+                () -> binder().bind(rig, new FakeAnchor(this.journal), options));
     }
 
     // ------------------------------------------------------------- the registry

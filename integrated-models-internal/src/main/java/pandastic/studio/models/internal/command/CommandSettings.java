@@ -41,8 +41,10 @@ import org.jetbrains.annotations.Nullable;
  * @param busyMessage     what a second caller is told while a reload is running
  * @param failedMessage   what is said when the reload threw rather than being refused; placeholder
  *                        {@code error}
+ * @param menuNotPlayerMessage reply sent when the menu command is used by a non-player sender
  */
 public record CommandSettings(
+        @NotNull String menuNotPlayerMessage,
         @NotNull String startedMessage,
         @NotNull String appliedMessage,
         @NotNull String rebuildMessage,
@@ -52,7 +54,27 @@ public record CommandSettings(
         @NotNull String failedMessage
 ) {
 
+    /**
+     * Compatibility constructor for callers that only configure the reload command.
+     *
+     * <p>The menu reply was added when the player-facing command was wired; keeping this overload
+     * avoids making test fixtures and downstream internal tooling provide an unrelated value.
+     */
+    public CommandSettings(
+            @NotNull String startedMessage,
+            @NotNull String appliedMessage,
+            @NotNull String rebuildMessage,
+            @NotNull String refusedMessage,
+            @NotNull String diagnosticLine,
+            @NotNull String busyMessage,
+            @NotNull String failedMessage
+    ) {
+        this("<red>Only players can open the model menu.", startedMessage, appliedMessage, rebuildMessage,
+                refusedMessage, diagnosticLine, busyMessage, failedMessage);
+    }
+
     public CommandSettings {
+        requireText(menuNotPlayerMessage, "menuNotPlayerMessage");
         requirePresent(startedMessage, "startedMessage");
         requireText(appliedMessage, "appliedMessage");
         requirePresent(rebuildMessage, "rebuildMessage");

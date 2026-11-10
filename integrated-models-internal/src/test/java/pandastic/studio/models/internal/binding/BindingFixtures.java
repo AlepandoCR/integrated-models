@@ -159,6 +159,43 @@ final class BindingFixtures {
         return RenderSettingsSource.fixed(RENDER_SETTINGS);
     }
 
+    /**
+     * A simulation settings source a test can move, which is what a reload looks like from in here.
+     *
+     * <p>Hands out the same instance until it is published over, which is the contract
+     * {@link SimulationSettingsSource} puts on a live implementation and the thing a per-binding view of
+     * it has to preserve.
+     */
+    static final class MutableSimulationSource implements SimulationSettingsSource {
+
+        private volatile SimulationSettings settings;
+        private int reads;
+
+        MutableSimulationSource(@NotNull SimulationSettings initial) {
+            this.settings = initial;
+        }
+
+        @Override
+        public SimulationSettings current() {
+            this.reads++;
+            return this.settings;
+        }
+
+        void publish(@NotNull SimulationSettings next) {
+            this.settings = next;
+        }
+
+        /**
+         * How many times the source was consulted.
+         *
+         * <p>Counted because "read once" is the contract and a view that read its delegate twice could
+         * straddle a reload and derive a snapshot from two generations.
+         */
+        int reads() {
+            return this.reads;
+        }
+    }
+
     /** A binding settings source a test can move, which is what a reload looks like from in here. */
     static final class MutableBindingSource implements BindingSettingsSource {
 

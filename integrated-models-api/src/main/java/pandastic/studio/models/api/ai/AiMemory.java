@@ -72,8 +72,15 @@ public final class AiMemory<ValueType> {
      * across a tick boundary, not a limit anyone would want raised.
      */
     public static final @NotNull Set<Class<?>> VALUE_TYPES = Set.of(
-            Boolean.class, Integer.class, Long.class, Float.class, Double.class,
-            String.class, UUID.class, AiPoint.class);
+            Boolean.class,
+            Integer.class,
+            Long.class,
+            Float.class,
+            Double.class,
+            String.class,
+            UUID.class,
+            AiPoint.class
+    );
 
     /**
      * Expiry value meaning "until something erases it".
