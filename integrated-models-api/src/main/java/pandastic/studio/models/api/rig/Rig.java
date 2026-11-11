@@ -92,6 +92,22 @@ public final class Rig {
     }
 
     /**
+     * Creates a render-only rig with one pass-through root, keeping the dirty tracker valid for static
+     * assets while declaring no physics or locomotion bones.
+     */
+    public static @NotNull Rig modelOnly(@NotNull String modelId, @NotNull String rootBone) {
+        if (modelId.isBlank()) {
+            throw new IllegalArgumentException("A model-only rig needs a model id");
+        }
+        final String normalized = normalise(rootBone);
+        if (normalized.isBlank()) {
+            throw new IllegalArgumentException("A model-only rig needs a root bone");
+        }
+        return new Rig(modelId, modelId, List.of(new RigBone(normalized, RigBone.NO_PARENT, null)),
+                Map.of(normalized, 0), ArmSwingAxis.PITCH, ArmSwingAxis.PITCH);
+    }
+
+    /**
      * A builder for a rig called {@code name} that drives the model registered as {@code modelId}.
      *
      * @param rigBounds     the structural ceiling a rig is built within

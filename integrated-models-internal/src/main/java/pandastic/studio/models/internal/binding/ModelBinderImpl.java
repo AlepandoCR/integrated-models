@@ -5,6 +5,7 @@ import org.jetbrains.annotations.NotNull;
 import pandastic.studio.models.api.binding.BindingOptions;
 import pandastic.studio.models.api.binding.ModelBinder;
 import pandastic.studio.models.api.rig.Rig;
+import pandastic.studio.models.internal.render.ModelSkeleton;
 import pandastic.studio.models.internal.sim.SimulationLoop;
 import pandastic.studio.models.internal.sim.SimulationSettingsSource;
 
@@ -87,6 +88,19 @@ public final class ModelBinderImpl implements ModelBinder {
         this.bindingSettings = Objects.requireNonNull(bindingSettings, "bindingSettings");
         this.validator = Objects.requireNonNull(validator, "validator");
         this.locomotion = Objects.requireNonNull(locomotion, "locomotion");
+    }
+
+    @Override
+    public @NotNull RiggedModelImpl bind(@NotNull String modelId, @NotNull Entity entity) {
+        final ModelSkeleton skeleton = ModelSkeleton.of(modelId).orElseThrow(
+                () -> new IllegalStateException(
+                        "Cannot bind model-only asset '" + modelId + "': BetterModel has not loaded it."));
+        if (skeleton.boneNames().isEmpty()) {
+            throw new IllegalStateException(
+                    "Cannot bind model-only asset '" + modelId + "': it declares no bones.");
+        }
+        return bind(Rig.modelOnly(modelId, skeleton.boneNames().get(0)), entity,
+                BindingOptions.defaults());
     }
 
     @Override
