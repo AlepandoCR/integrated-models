@@ -38,6 +38,17 @@ import pandastic.studio.models.api.rig.Rig;
 public interface ModelBinder {
 
     /**
+     * Binds a renderer model without a plugin rig or secondary-motion configuration.
+     *
+     * <p>The returned model still follows and renders the entity, but exposes no driven bones and
+     * therefore performs no custom locomotion or physics. This is the fallback for models that have
+     * no rig file.
+     */
+    default @NotNull RiggedModel bind(@NotNull String modelId, @NotNull Entity entity) {
+        return bind(Rig.modelOnly(modelId), entity, BindingOptions.defaults());
+    }
+
+    /**
      * Validates {@code rig} against its model and returns a handle for driving {@code entity} with it,
      * entirely on the server's own configuration.
      *

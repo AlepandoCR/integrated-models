@@ -66,6 +66,7 @@ public final class Rig {
             if (bone.hasPhysics()) {
                 physicsCount++;
             }
+
         }
         this.physicsBones = new int[physicsCount];
         int cursor = 0;
@@ -74,6 +75,20 @@ public final class Rig {
                 this.physicsBones[cursor++] = index;
             }
         }
+
+    }
+
+    /**
+     * Creates a model-only rig that drives no bones.
+     *
+     * <p>This is used when a consumer wants the renderer's complete authored model without declaring
+     * secondary-motion physics. It is intentionally not produced by the YAML rig builder.
+     */
+    public static @NotNull Rig modelOnly(@NotNull String modelId) {
+        if (modelId.isBlank()) {
+            throw new IllegalArgumentException("A model-only rig needs a model id");
+        }
+        return new Rig(modelId, modelId, List.of(), Map.of(), ArmSwingAxis.PITCH, ArmSwingAxis.PITCH);
     }
 
     /**

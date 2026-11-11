@@ -254,6 +254,7 @@ public final class ReloadCommand implements BasicCommand {
         // previous one when it was refused.
         final String revision = Long.toString(result.snapshot().revision());
 
+
         if (!result.applied()) {
             final List<ConfigDiagnostic> problems = result.diagnostics();
             recipient.sendMessage(MenuText.of(text.refusedMessage(),
