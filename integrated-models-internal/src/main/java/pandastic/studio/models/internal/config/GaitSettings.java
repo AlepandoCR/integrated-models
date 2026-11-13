@@ -555,7 +555,7 @@ public interface GaitSettings {
      */
     @ConfigValue(comment = "Longest stride a gait profile accepts, in blocks. A sanity ceiling.")
     default float maxStrideLength() {
-        return 8F;
+        return 64F;
     }
 
     /**

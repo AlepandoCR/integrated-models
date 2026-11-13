@@ -99,7 +99,15 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
 
         final GaitTuning tuning = this.configs.gait();
         final IkTolerance tolerance = this.configs.ikTolerance();
-        final GaitProfile profile = GaitProfile.defaults(tuning).requireWithin(bounds);
+        GaitProfile profile = GaitProfile.defaults(tuning);
+        if (validSegmentPair(thigh, shin, bounds)) {
+            final float reach = thigh + shin;
+            final float geometryStride = reach / tuning.strideToFootReach();
+            final float stride = Math.max(profile.strideLength(),
+                    Math.min(bounds.maxStrideLength(), geometryStride));
+            profile = profile.withStrideLength(stride);
+        }
+        profile = profile.requireWithin(bounds);
         return new LocomotionStage(
                 new WalkCycleSolver(tuning, tolerance),
                 binding.build(),
@@ -155,9 +163,12 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
 
     private static float segmentLength(
             @NotNull Map<String, ModelBone> bones,
-            @NotNull String from,
-            @NotNull String to
+            @Nullable String from,
+            @Nullable String to
     ) {
+        if (from == null || to == null) {
+            return Float.NaN;
+        }
         final ModelBone first = bones.get(Rig.normalise(from));
         final ModelBone second = bones.get(Rig.normalise(to));
         return first == null || second == null
