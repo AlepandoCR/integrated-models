@@ -1,5 +1,5 @@
 name: integrated-models
-version: '1.0.5-SNAPSHOT'
+version: '1.0.6-SNAPSHOT'
 main: pandastic.studio.models.internal.IntegratedModelsPlugin
 api-version: '26.3'
 folia-supported: true
