@@ -120,7 +120,7 @@ public interface GaitSettings {
      */
     @ConfigValue(comment = "Converts stride length into a foot's fore-aft swing amplitude. Derived from the geometry, not chosen: a quarter is what keeps the foot planted relative to the ground.")
     default float strideToFootReach() {
-        return 0.25F;
+        return 0.42F;
     }
 
     /**

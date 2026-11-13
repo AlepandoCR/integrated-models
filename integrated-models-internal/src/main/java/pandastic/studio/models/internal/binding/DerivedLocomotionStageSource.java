@@ -53,29 +53,42 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
         binding.handSwingAxis(rig.handSwingAxis());
         bindIfPresent(binding, rig, GaitRole.TORSO, "body");
         bindIfPresent(binding, rig, GaitRole.HEAD, "head");
-        bindIfPresent(binding, rig, GaitRole.LEFT_UPPER_ARM, "left_arm");
-        bindIfPresent(binding, rig, GaitRole.LEFT_FOREARM, "left_forearm");
+        bindFirstPresent(binding, rig, GaitRole.LEFT_UPPER_ARM, "left_arm", "leftarm", "front_leg1");
+        bindFirstPresent(binding, rig, GaitRole.LEFT_FOREARM, "left_forearm", "leftarm_low");
         bindIfPresent(binding, rig, GaitRole.LEFT_HAND, "left_hand");
-        bindIfPresent(binding, rig, GaitRole.RIGHT_UPPER_ARM, "right_arm");
-        bindIfPresent(binding, rig, GaitRole.RIGHT_FOREARM, "right_forearm");
+        bindFirstPresent(binding, rig, GaitRole.RIGHT_UPPER_ARM, "right_arm", "rightarm", "front_leg2");
+        bindFirstPresent(binding, rig, GaitRole.RIGHT_FOREARM, "right_forearm", "rightarm_low");
         bindIfPresent(binding, rig, GaitRole.RIGHT_HAND, "right_hand");
-        final float thigh = segmentLength(modelBones, "right_leg", "right_leg_joint");
-        final float shin = segmentLength(modelBones, "right_leg_joint", "right_foot");
-        bindIfPresent(binding, rig, GaitRole.LEFT_THIGH, "left_leg");
-        bindIfPresent(binding, rig, GaitRole.RIGHT_THIGH, "right_leg");
+        final boolean quadruped = rig.indexOf("leftleg").isPresent()
+                && rig.indexOf("rightleg").isPresent()
+                && (rig.indexOf("front_leg1").isPresent() || rig.indexOf("leftarm").isPresent());
+        if (quadruped) {
+            binding.quadruped();
+        }
+        final String leftThighName = firstPresent(rig, "left_leg", "leftleg", "back_leg1");
+        final String rightThighName = firstPresent(rig, "right_leg", "rightleg", "back_leg2");
+        final String rightShinName = firstPresent(rig, "right_leg_joint", "rightleg_low");
+        final String leftShinName = firstPresent(rig, "left_leg_joint", "leftleg_low");
+        final float thigh = segmentLength(modelBones, rightThighName, rightShinName);
+        final float measuredShin = segmentLength(modelBones, rightShinName, "right_foot");
+        final float shin = Float.isFinite(measuredShin) ? measuredShin : thigh;
+        if (leftThighName != null) {
+            binding.bone(GaitRole.LEFT_THIGH, leftThighName);
+        }
+        if (rightThighName != null) {
+            binding.bone(GaitRole.RIGHT_THIGH, rightThighName);
+        }
         if (validSegmentPair(thigh, shin, bounds)
-                && rig.indexOf("left_leg_joint").isPresent()
-                && rig.indexOf("right_leg_joint").isPresent()
-                && rig.indexOf("left_foot").isPresent()
-                && rig.indexOf("right_foot").isPresent()) {
-            bindIfPresent(binding, rig, GaitRole.LEFT_SHIN, "left_leg_joint");
+                && rightShinName != null
+                && leftShinName != null) {
+            bindIfPresent(binding, rig, GaitRole.LEFT_SHIN, leftShinName);
             bindIfPresent(binding, rig, GaitRole.LEFT_FOOT, "left_foot");
-            bindIfPresent(binding, rig, GaitRole.RIGHT_SHIN, "right_leg_joint");
+            bindIfPresent(binding, rig, GaitRole.RIGHT_SHIN, rightShinName);
             bindIfPresent(binding, rig, GaitRole.RIGHT_FOOT, "right_foot");
             binding.legSegments(thigh, shin);
         } else {
-            bindIfPresent(binding, rig, GaitRole.LEFT_FOOT, "left_foot");
-            bindIfPresent(binding, rig, GaitRole.RIGHT_FOOT, "right_foot");
+            bindFirstPresent(binding, rig, GaitRole.LEFT_FOOT, "left_foot");
+            bindFirstPresent(binding, rig, GaitRole.RIGHT_FOOT, "right_foot");
         }
 
         if (!hasLocomotionBones(rig)) {
@@ -102,11 +115,34 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
         }
     }
 
+    private static void bindFirstPresent(
+            @NotNull LocomotionBinding.Builder binding,
+            @NotNull Rig rig,
+            @NotNull GaitRole role,
+            @NotNull String... names
+    ) {
+        final String name = firstPresent(rig, names);
+        if (name != null) {
+            binding.bone(role, name);
+        }
+    }
+
+    private static @Nullable String firstPresent(@NotNull Rig rig, @NotNull String... names) {
+        for (final String name : names) {
+            if (rig.indexOf(name).isPresent()) {
+                return name;
+            }
+        }
+        return null;
+    }
+
     private static boolean hasLocomotionBones(@NotNull Rig rig) {
         return rig.indexOf("body").isPresent()
                 || rig.indexOf("head").isPresent()
                 || rig.indexOf("left_leg").isPresent()
                 || rig.indexOf("right_leg").isPresent()
+                || rig.indexOf("leftleg").isPresent()
+                || rig.indexOf("rightleg").isPresent()
                 || rig.indexOf("left_arm").isPresent()
                 || rig.indexOf("right_arm").isPresent();
     }

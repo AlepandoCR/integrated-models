@@ -433,10 +433,17 @@ public final class WalkCycleSolver implements LocomotionSolver {
         // is what cancels the angular momentum a stride generates, and a model whose arms swing in phase
         // with its legs reads as a toy soldier.
         final float armScale = weight * profile.armSwing();
-        writeArm(binding, profile, gait, pose, armScale, opposed,
-                GaitRole.LEFT_UPPER_ARM, GaitRole.LEFT_FOREARM, GaitRole.LEFT_HAND);
-        writeArm(binding, profile, gait, pose, armScale, cycle,
-                GaitRole.RIGHT_UPPER_ARM, GaitRole.RIGHT_FOREARM, GaitRole.RIGHT_HAND);
+        if (binding.isQuadruped()) {
+            writeLeg(binding, profile, gait, pose, legScale, onePieceSwing, opposed,
+                    GaitRole.LEFT_UPPER_ARM, GaitRole.LEFT_FOREARM, GaitRole.LEFT_HAND, 0F);
+            writeLeg(binding, profile, gait, pose, legScale, onePieceSwing, cycle,
+                    GaitRole.RIGHT_UPPER_ARM, GaitRole.RIGHT_FOREARM, GaitRole.RIGHT_HAND, 0F);
+        } else {
+            writeArm(binding, profile, gait, pose, armScale, opposed,
+                    GaitRole.LEFT_UPPER_ARM, GaitRole.LEFT_FOREARM, GaitRole.LEFT_HAND);
+            writeArm(binding, profile, gait, pose, armScale, cycle,
+                    GaitRole.RIGHT_UPPER_ARM, GaitRole.RIGHT_FOREARM, GaitRole.RIGHT_HAND);
+        }
         writeAttack(binding, gait, pose);
     }
 

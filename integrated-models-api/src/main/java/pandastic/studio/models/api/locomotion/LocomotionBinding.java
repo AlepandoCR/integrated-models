@@ -73,6 +73,7 @@ public final class LocomotionBinding {
     private final float facingDegrees;
     private final @NotNull ArmSwingAxis armSwingAxis;
     private final @NotNull ArmSwingAxis handSwingAxis;
+    private final boolean quadruped;
 
     /**
      * {@link #facingDegrees} as a rotation, resolved once.
@@ -93,7 +94,8 @@ public final class LocomotionBinding {
             float kneeBendSign,
             float facingDegrees,
             @NotNull ArmSwingAxis armSwingAxis,
-            @NotNull ArmSwingAxis handSwingAxis
+            @NotNull ArmSwingAxis handSwingAxis,
+            boolean quadruped
     ) {
         this.rigName = rigName;
         this.boneCount = boneCount;
@@ -104,6 +106,7 @@ public final class LocomotionBinding {
         this.facingDegrees = facingDegrees;
         this.armSwingAxis = armSwingAxis;
         this.handSwingAxis = handSwingAxis;
+        this.quadruped = quadruped;
 
         final double radians = Math.toRadians(facingDegrees);
         this.facingCos = (float) Math.cos(radians);
@@ -192,6 +195,10 @@ public final class LocomotionBinding {
     /** Whether at least one thigh is bound, and therefore whether there is a walk cycle to run. */
     public boolean hasLegs() {
         return isBound(GaitRole.LEFT_THIGH) || isBound(GaitRole.RIGHT_THIGH);
+    }
+
+    public boolean isQuadruped() {
+        return this.quadruped;
     }
 
     /** Whether the leg on this side is solved with inverse kinematics rather than swung as one piece. */
@@ -339,6 +346,7 @@ public final class LocomotionBinding {
         private float facingDegrees;
         private @NotNull ArmSwingAxis armSwingAxis = ArmSwingAxis.PITCH;
         private @NotNull ArmSwingAxis handSwingAxis = ArmSwingAxis.PITCH;
+        private boolean quadruped;
 
         private Builder(@NotNull Rig rig, @NotNull BindingBounds bounds) {
             this.rig = rig;
@@ -443,6 +451,11 @@ public final class LocomotionBinding {
             return this;
         }
 
+        public @NotNull Builder quadruped() {
+            this.quadruped = true;
+            return this;
+        }
+
         private void requireSegment(float length, @NotNull String name) {
             final float min = this.bounds.minSegmentLength();
             final float max = this.bounds.maxSegmentLength();
@@ -515,7 +528,7 @@ public final class LocomotionBinding {
             return new LocomotionBinding(
                     this.rig.getName(), this.rig.boneCount(), this.boneByRole.clone(),
                     this.thighLength, this.shinLength, this.kneeBendSign, this.facingDegrees,
-                    this.armSwingAxis, this.handSwingAxis);
+                    this.armSwingAxis, this.handSwingAxis, this.quadruped);
         }
     }
 }

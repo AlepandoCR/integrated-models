@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.Set;
 
 /**
  * An immutable, validated skeleton overlay: which bones of a model this library drives, how they are
@@ -37,6 +38,11 @@ import java.util.OptionalInt;
  * ordering a construction-time requirement removes the failure mode instead of documenting it.
  */
 public final class Rig {
+
+    private static final Set<String> RENDERER_TAGS = Set.of(
+            "h", "hi", "b", "ob", "p", "sp", "tag", "mtag", "ptag", "glow",
+            "pli", "li", "pri", "ri", "ph", "pra", "prfa", "pla", "plfa", "phip",
+            "pw", "pc", "prl", "prfl", "pll", "plfl");
 
     private final @NotNull String name;
     private final @NotNull String modelId;
@@ -143,7 +149,13 @@ public final class Rig {
      * same statement.
      */
     public static @NotNull String normalise(@NotNull String boneName) {
-        return boneName.toLowerCase(Locale.ROOT);
+        String normalised = boneName.toLowerCase(Locale.ROOT);
+        int separator = normalised.indexOf('_');
+        while (separator > 0 && RENDERER_TAGS.contains(normalised.substring(0, separator))) {
+            normalised = normalised.substring(separator + 1);
+            separator = normalised.indexOf('_');
+        }
+        return normalised;
     }
 
     /** This rig's own identifier, for logs and diagnostics. */
