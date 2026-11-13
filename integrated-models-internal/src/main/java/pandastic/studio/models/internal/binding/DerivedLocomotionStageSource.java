@@ -59,9 +59,11 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
         bindFirstPresent(binding, rig, GaitRole.RIGHT_UPPER_ARM, "right_arm", "rightarm", "front_leg2");
         bindFirstPresent(binding, rig, GaitRole.RIGHT_FOREARM, "right_forearm", "rightarm_low");
         bindIfPresent(binding, rig, GaitRole.RIGHT_HAND, "right_hand");
-        final boolean quadruped = rig.indexOf("leftleg").isPresent()
-                && rig.indexOf("rightleg").isPresent()
-                && (rig.indexOf("front_leg1").isPresent() || rig.indexOf("leftarm").isPresent());
+        final boolean quadruped = (rig.indexOf("leftleg").isPresent()
+                && rig.indexOf("rightleg").isPresent())
+                || (rig.indexOf("back_leg1").isPresent()
+                && rig.indexOf("back_leg2").isPresent()
+                && (rig.indexOf("front_leg1").isPresent() || rig.indexOf("front_leg2").isPresent()));
         if (quadruped) {
             binding.quadruped();
         }
@@ -143,6 +145,10 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
                 || rig.indexOf("right_leg").isPresent()
                 || rig.indexOf("leftleg").isPresent()
                 || rig.indexOf("rightleg").isPresent()
+                || rig.indexOf("front_leg1").isPresent()
+                || rig.indexOf("front_leg2").isPresent()
+                || rig.indexOf("back_leg1").isPresent()
+                || rig.indexOf("back_leg2").isPresent()
                 || rig.indexOf("left_arm").isPresent()
                 || rig.indexOf("right_arm").isPresent();
     }
