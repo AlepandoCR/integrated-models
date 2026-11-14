@@ -2,6 +2,7 @@ package pandastic.studio.models.internal.binding;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.bukkit.entity.Entity;
 import pandastic.studio.models.api.binding.BindingOptions;
 import pandastic.studio.models.api.binding.RiggedModel;
 import pandastic.studio.models.api.locomotion.GaitState;
@@ -14,6 +15,7 @@ import pandastic.studio.models.internal.sim.SimulationLoop;
 import pandastic.studio.models.internal.sim.SimulationSettingsSource;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -242,6 +244,13 @@ public final class RiggedModelImpl implements RiggedModel {
     @Override
     public @NotNull UUID getUniqueIdentifier() {
         return this.uniqueIdentifier;
+    }
+
+    @Override
+    public @NotNull Optional<Entity> getEntity() {
+        return this.anchor instanceof EntityAnchor entityAnchor
+                ? Optional.of(entityAnchor.entity())
+                : Optional.empty();
     }
 
     @Override

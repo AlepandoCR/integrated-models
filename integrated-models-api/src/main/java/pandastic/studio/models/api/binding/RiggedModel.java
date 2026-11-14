@@ -1,8 +1,10 @@
 package pandastic.studio.models.api.binding;
 
 import org.jetbrains.annotations.NotNull;
+import org.bukkit.entity.Entity;
 import pandastic.studio.models.api.rig.Rig;
 
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -57,6 +59,17 @@ public interface RiggedModel extends AutoCloseable {
      * so the entity's identity cannot name a binding.
      */
     @NotNull UUID getUniqueIdentifier();
+
+    /**
+     * The original entity this model follows, when the binding is entity-backed.
+     *
+     * <p>Binding a model never replaces or owns this entity. BetterModel creates renderer-side
+     * display entities, while this remains the gameplay entity and keeps its AI, traits and metadata.
+     * The optional is empty only for custom non-entity anchors.
+     */
+    default @NotNull Optional<Entity> getEntity() {
+        return Optional.empty();
+    }
 
     /**
      * Creates the renderer-side binding and starts simulating.
