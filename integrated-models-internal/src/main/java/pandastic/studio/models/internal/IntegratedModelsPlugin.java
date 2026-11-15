@@ -7,6 +7,7 @@ import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import pandastic.studio.core.service.api.PandasticCore;
 import pandastic.studio.models.api.IntegratedModels;
 import pandastic.studio.models.api.ai.CreatureAi;
 import pandastic.studio.models.api.binding.ModelBinder;
@@ -53,7 +54,7 @@ import java.util.Optional;
  *
  * <h2>Why shutdown is the first statement of onDisable</h2>
  * A plugin's classloader is closed <em>before</em> the platform cancels its tasks, and region- and
- * entity-scheduled repeating tasks are never cancelled for a plugin at all. So a sampler, a control
+ * entity-scheduled repeating tasks are never canceled for a plugin at all. So a sampler, a control
  * loop or a sensor still holding these classes fails on the first lazy class load after that close.
  * {@link ModelRuntime#shutdown()} is what cancels every one of them, in the one order that is safe, and
  * nothing may be added above that line.
@@ -62,6 +63,7 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
 
     private static @Nullable IntegratedModelsPlugin instance;
 
+    private @Nullable PandasticCore pandasticCore;
     private @Nullable ModelManager modelManager;
     private @Nullable ModelRuntime runtime;
     private @Nullable MenuService menu;
@@ -74,8 +76,10 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
 
     @Override
     public void onEnable() {
+        this.pandasticCore = PandasticCore.instance(this);
         this.runtime = ModelRuntime.create(this);
         this.runtime.start();
+        this.getPandasticCore().registerBridgePackage(this, "pandastic.studio.models.bridge");
         this.menu = new MenuService(
                 runtime().configs()::menu,
                 new PaperMenuSurface(getComponentLogger()),
@@ -112,6 +116,10 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
     @Override
     public @NotNull ModelManager getModelManager() {
         return Objects.requireNonNull(this.modelManager, "Model manager is not initialized yet");
+    }
+
+    public @NotNull PandasticCore getPandasticCore() {
+        return Objects.requireNonNull(this.pandasticCore, "PandasticCore is not initialized yet");
     }
 
     @Override

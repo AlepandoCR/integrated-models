@@ -103,12 +103,7 @@ if (nmsProject != null) {
     }
 
     tasks.named<ShadowJar>("shadowJar") {
-        // Both entries are named explicitly, and the runtime classpath is NOT redundant. Shadow's
-        // convention for this property is [runtimeClasspath], but a Gradle collection property
-        // discards its convention the moment a value is added — so `add(nmsLayer)` alone leaves the
-        // property holding nothing but nmsLayer, and the api module and pandastic-core silently fall
-        // out of the shaded jar. That drops it from 328 classes to 120 and produces a plugin that
-        // loads and then dies on the first configuration read.
+        mergeServiceFiles()
         configurations.add(project.configurations.named("runtimeClasspath"))
         configurations.add(nmsLayer)
     }
