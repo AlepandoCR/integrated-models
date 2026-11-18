@@ -1,13 +1,22 @@
 package pandastic.studio.models.internal.binding;
 
 import kr.toxicity.model.api.tracker.Tracker;
+import kr.toxicity.model.api.animation.AnimationIterator;
+import kr.toxicity.model.api.animation.AnimationModifier;
+import kr.toxicity.model.api.tracker.ModelRotation;
+import kr.toxicity.model.api.tracker.ModelScaler;
+import kr.toxicity.model.api.tracker.TrackerUpdateAction;
+import kr.toxicity.model.api.util.function.BonePredicate;
+import kr.toxicity.model.api.bukkit.platform.BukkitAdapter;
 import org.jetbrains.annotations.NotNull;
+import org.bukkit.entity.Player;
 import pandastic.studio.models.api.render.PoseSink;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
 import pandastic.studio.models.internal.render.TrackerPoseSink;
 
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * A live BetterModel tracker and the sink writing poses onto it.
@@ -88,6 +97,134 @@ public final class TrackerRenderBinding implements RenderBinding {
     @Override
     public boolean isClosed() {
         return this.tracker.isClosed();
+    }
+
+    @Override
+    public void setScale(float scale) {
+        if (!Float.isFinite(scale) || scale <= 0F) {
+            throw new IllegalArgumentException("scale must be finite and greater than zero");
+        }
+        this.tracker.scaler(ModelScaler.entity().multiply(scale));
+    }
+
+    @Override
+    public void setRotation(float pitchDegrees, float yawDegrees) {
+        this.tracker.rotation(() -> new ModelRotation(pitchDegrees, yawDegrees));
+    }
+
+    @Override
+    public void setTint(int rgb) {
+        this.tracker.update(TrackerUpdateAction.tint(rgb));
+    }
+
+    @Override
+    public void clearTint() {
+        this.tracker.update(TrackerUpdateAction.previousTint());
+    }
+
+    @Override
+    public void setGlow(boolean glow) {
+        this.tracker.update(TrackerUpdateAction.glow(glow));
+    }
+
+    @Override
+    public void setGlowColor(int rgb) {
+        this.tracker.update(TrackerUpdateAction.glowColor(rgb));
+    }
+
+    @Override
+    public void setGlint(boolean glint) {
+        this.tracker.update(TrackerUpdateAction.enchant(glint));
+    }
+
+    @Override
+    public void setBrightness(int blockLight, int skyLight) {
+        this.tracker.update(TrackerUpdateAction.brightness(
+                Math.clamp(blockLight, 0, 15),
+                Math.clamp(skyLight, 0, 15)));
+    }
+
+    @Override
+    public void setViewRange(float blocks) {
+        if (!Float.isFinite(blocks) || blocks <= 0F) {
+            throw new IllegalArgumentException("view range must be finite and greater than zero");
+        }
+        this.tracker.update(TrackerUpdateAction.viewRange(blocks));
+    }
+
+    @Override
+    public void setVisible(boolean visible) {
+        this.tracker.update(TrackerUpdateAction.togglePart(visible));
+    }
+
+    @Override
+    public void setBoneVisible(@NotNull String boneName, boolean visible) {
+        this.tracker.update(
+                TrackerUpdateAction.togglePart(visible),
+                BonePredicate.name(boneName).withChildren());
+    }
+
+    @Override
+    public void setBoneTint(@NotNull String boneName, int rgb) {
+        this.tracker.update(
+                TrackerUpdateAction.tint(rgb),
+                BonePredicate.name(boneName).withChildren());
+    }
+
+    @Override
+    public void clearBoneTint(@NotNull String boneName) {
+        this.tracker.update(
+                TrackerUpdateAction.previousTint(),
+                BonePredicate.name(boneName).withChildren());
+    }
+
+    @Override
+    public void setBoneGlow(@NotNull String boneName, boolean glow) {
+        this.tracker.update(
+                TrackerUpdateAction.glow(glow),
+                BonePredicate.name(boneName).withChildren());
+    }
+
+    @Override
+    public @NotNull Set<String> animationNames() {
+        return Set.copyOf(this.tracker.renderer().animations().keySet());
+    }
+
+    @Override
+    public boolean playAnimation(@NotNull String animationName, boolean loop) {
+        final AnimationModifier modifier = AnimationModifier.builder()
+                .type(loop ? AnimationIterator.Type.LOOP : AnimationIterator.Type.PLAY_ONCE)
+                .speed(1F)
+                .start(1)
+                .end(0)
+                .build();
+        return this.tracker.animate(animationName, modifier);
+    }
+
+    @Override
+    public boolean stopAnimation(@NotNull String animationName) {
+        return this.tracker.stopAnimation(animationName);
+    }
+
+    @Override
+    public boolean replaceAnimation(@NotNull String targetAnimation, @NotNull String newAnimation) {
+        final AnimationModifier modifier = AnimationModifier.builder()
+                .type(AnimationIterator.Type.LOOP)
+                .speed(1F)
+                .start(1)
+                .end(0)
+                .build();
+        return this.tracker.replace(targetAnimation, newAnimation, modifier);
+    }
+
+    @Override
+    public boolean hide(@NotNull Player player) {
+        return this.tracker.hide(BukkitAdapter.adapt(player));
+    }
+
+    @Override
+    public boolean show(@NotNull Player player) {
+        return this.tracker.show(BukkitAdapter.adapt(player));
     }
 
     /** The tracker, for a caller that needs to decorate the model it is already driving. */

@@ -2,9 +2,12 @@ package pandastic.studio.models.api.binding;
 
 import org.jetbrains.annotations.NotNull;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
 import pandastic.studio.models.api.rig.Rig;
 
+import java.util.Collections;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -97,6 +100,85 @@ public interface RiggedModel extends AutoCloseable {
 
     /** Whether this model is spawned and being simulated. */
     boolean isAlive();
+
+    /**
+     * Changes the scale of the whole model.
+     *
+     * @param scale scale multiplier; 1.0 keeps the model's original size
+     */
+    default void setScale(float scale) {}
+
+    /**
+     * Adds a fixed pitch/yaw rotation to the model.
+     *
+     * @param pitchDegrees pitch in degrees
+     * @param yawDegrees yaw in degrees
+     */
+    default void setRotation(float pitchDegrees, float yawDegrees) {}
+
+    /** Applies a tint to every visible bone. The RGB value uses {@code 0xRRGGBB}. */
+    default void setTint(int rgb) {}
+
+    /** Removes the model tint. */
+    default void clearTint() {}
+
+    /** Enables or disables the whole-model glow outline. */
+    default void setGlow(boolean glow) {}
+
+    /** Changes the whole-model glow outline color. The RGB value uses {@code 0xRRGGBB}. */
+    default void setGlowColor(int rgb) {}
+
+    /** Enables or disables the enchanted-item glint. */
+    default void setGlint(boolean glint) {}
+
+    /** Changes block and sky brightness for every display bone. */
+    default void setBrightness(int blockLight, int skyLight) {}
+
+    /** Changes the model's rendering distance. */
+    default void setViewRange(float blocks) {}
+
+    /** Shows or hides the whole model. */
+    default void setVisible(boolean visible) {}
+
+    /** Shows or hides one rendered bone and, where supported, its children. */
+    default void setBoneVisible(@NotNull String boneName, boolean visible) {}
+
+    /** Tints one rendered bone and, where supported, its children. */
+    default void setBoneTint(@NotNull String boneName, int rgb) {}
+
+    /** Removes tint from one rendered bone. */
+    default void clearBoneTint(@NotNull String boneName) {}
+
+    /** Enables or disables glow on one rendered bone. */
+    default void setBoneGlow(@NotNull String boneName, boolean glow) {}
+
+    /** Names available for {@link #playAnimation(String)} and {@link #replaceAnimation(String, String)}. */
+    @NotNull
+    default Set<String> getAnimationNames() {
+        return Collections.emptySet();
+    }
+
+    /**
+     * Starts a looping animation.
+     *
+     * @return true if the animation exists and was started
+     */
+    default boolean playAnimation(@NotNull String animationName) { return false; }
+
+    /** Starts an animation once and lets it finish at its last frame. */
+    default boolean playAnimationOnce(@NotNull String animationName) { return false; }
+
+    /** Stops a currently running animation. */
+    default boolean stopAnimation(@NotNull String animationName) { return false; }
+
+    /** Stops {@code targetAnimation} and starts {@code newAnimation} in its place. */
+    default boolean replaceAnimation(@NotNull String targetAnimation, @NotNull String newAnimation) { return false; }
+
+    /** Hides this model from one player. */
+    default boolean hide(@NotNull Player player) { return false; }
+
+    /** Shows this model to one player. */
+    default boolean show(@NotNull Player player) { return false; }
 
     /**
      * {@link #despawn()}, so a model can be managed with try-with-resources.

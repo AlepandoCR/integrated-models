@@ -56,4 +56,25 @@ public interface RenderBinding {
 
     /** Whether the tracker has been released. */
     boolean isClosed();
+
+    default void setScale(float scale) {}
+    default void setRotation(float pitchDegrees, float yawDegrees) {}
+    default void setTint(int rgb) {}
+    default void clearTint() {}
+    default void setGlow(boolean glow) {}
+    default void setGlowColor(int rgb) {}
+    default void setGlint(boolean glint) {}
+    default void setBrightness(int blockLight, int skyLight) {}
+    default void setViewRange(float blocks) {}
+    default void setVisible(boolean visible) {}
+    default void setBoneVisible(@NotNull String boneName, boolean visible) {}
+    default void setBoneTint(@NotNull String boneName, int rgb) {}
+    default void clearBoneTint(@NotNull String boneName) {}
+    default void setBoneGlow(@NotNull String boneName, boolean glow) {}
+    default @NotNull java.util.Set<String> animationNames() { return java.util.Collections.emptySet(); }
+    default boolean playAnimation(@NotNull String animationName, boolean loop) { return false; }
+    default boolean stopAnimation(@NotNull String animationName) { return false; }
+    default boolean replaceAnimation(@NotNull String targetAnimation, @NotNull String newAnimation) { return false; }
+    default boolean hide(@NotNull org.bukkit.entity.Player player) { return false; }
+    default boolean show(@NotNull org.bukkit.entity.Player player) { return false; }
 }

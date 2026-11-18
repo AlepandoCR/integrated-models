@@ -108,6 +108,106 @@ final class TrackerDecorationRendering implements DecorationRendering {
         return this.poses.isClosed();
     }
 
+    @Override
+    public void setScale(float scale) {
+        this.poses.setScale(scale);
+    }
+
+    @Override
+    public void setRotation(float pitchDegrees, float yawDegrees) {
+        this.poses.setRotation(pitchDegrees, yawDegrees);
+    }
+
+    @Override
+    public void setTint(int rgb) {
+        this.poses.setTint(rgb);
+    }
+
+    @Override
+    public void clearTint() {
+        this.poses.clearTint();
+    }
+
+    @Override
+    public void setGlow(boolean glow) {
+        this.poses.setGlow(glow);
+    }
+
+    @Override
+    public void setGlowColor(int rgb) {
+        this.poses.setGlowColor(rgb);
+    }
+
+    @Override
+    public void setGlint(boolean glint) {
+        this.poses.setGlint(glint);
+    }
+
+    @Override
+    public void setBrightness(int blockLight, int skyLight) {
+        this.poses.setBrightness(blockLight, skyLight);
+    }
+
+    @Override
+    public void setViewRange(float blocks) {
+        this.poses.setViewRange(blocks);
+    }
+
+    @Override
+    public void setVisible(boolean visible) {
+        this.poses.setVisible(visible);
+    }
+
+    @Override
+    public void setBoneVisible(@NotNull String boneName, boolean visible) {
+        this.poses.setBoneVisible(boneName, visible);
+    }
+
+    @Override
+    public void setBoneTint(@NotNull String boneName, int rgb) {
+        this.poses.setBoneTint(boneName, rgb);
+    }
+
+    @Override
+    public void clearBoneTint(@NotNull String boneName) {
+        this.poses.clearBoneTint(boneName);
+    }
+
+    @Override
+    public void setBoneGlow(@NotNull String boneName, boolean glow) {
+        this.poses.setBoneGlow(boneName, glow);
+    }
+
+    @Override
+    public @NotNull java.util.Set<String> animationNames() {
+        return this.poses.animationNames();
+    }
+
+    @Override
+    public boolean playAnimation(@NotNull String animationName, boolean loop) {
+        return this.poses.playAnimation(animationName, loop);
+    }
+
+    @Override
+    public boolean stopAnimation(@NotNull String animationName) {
+        return this.poses.stopAnimation(animationName);
+    }
+
+    @Override
+    public boolean replaceAnimation(@NotNull String targetAnimation, @NotNull String newAnimation) {
+        return this.poses.replaceAnimation(targetAnimation, newAnimation);
+    }
+
+    @Override
+    public boolean hide(@NotNull org.bukkit.entity.Player player) {
+        return hide(player.getUniqueId());
+    }
+
+    @Override
+    public boolean show(@NotNull org.bukkit.entity.Player player) {
+        return show(player.getUniqueId());
+    }
+
     /**
      * {@inheritDoc}
      *

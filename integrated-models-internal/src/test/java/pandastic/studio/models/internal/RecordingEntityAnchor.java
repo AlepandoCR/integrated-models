@@ -2,6 +2,7 @@ package pandastic.studio.models.internal;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.bukkit.entity.Player;
 import pandastic.studio.models.api.pose.Pose;
 import pandastic.studio.models.api.render.PoseSink;
 import pandastic.studio.models.api.rig.Rig;
@@ -9,6 +10,9 @@ import pandastic.studio.models.internal.binding.AnchorSample;
 import pandastic.studio.models.internal.binding.AnchorTask;
 import pandastic.studio.models.internal.binding.ModelAnchor;
 import pandastic.studio.models.internal.binding.RenderBinding;
+
+import java.util.Collections;
+import java.util.Set;
 
 /**
  * An entity anchor that records its lifecycle events under a name.
@@ -145,5 +149,26 @@ final class RecordingEntityAnchor implements ModelAnchor {
         public boolean isClosed() {
             return this.closed;
         }
+
+        @Override public void setScale(float scale) {}
+        @Override public void setRotation(float pitchDegrees, float yawDegrees) {}
+        @Override public void setTint(int rgb) {}
+        @Override public void clearTint() {}
+        @Override public void setGlow(boolean glow) {}
+        @Override public void setGlowColor(int rgb) {}
+        @Override public void setGlint(boolean glint) {}
+        @Override public void setBrightness(int blockLight, int skyLight) {}
+        @Override public void setViewRange(float blocks) {}
+        @Override public void setVisible(boolean visible) {}
+        @Override public void setBoneVisible(@NotNull String boneName, boolean visible) {}
+        @Override public void setBoneTint(@NotNull String boneName, int rgb) {}
+        @Override public void clearBoneTint(@NotNull String boneName) {}
+        @Override public void setBoneGlow(@NotNull String boneName, boolean glow) {}
+        @Override public @NotNull Set<String> animationNames() { return Collections.emptySet(); }
+        @Override public boolean playAnimation(@NotNull String animationName, boolean loop) { return false; }
+        @Override public boolean stopAnimation(@NotNull String animationName) { return false; }
+        @Override public boolean replaceAnimation(@NotNull String targetAnimation, @NotNull String newAnimation) { return false; }
+        @Override public boolean hide(@NotNull Player player) { return false; }
+        @Override public boolean show(@NotNull Player player) { return false; }
     }
 }

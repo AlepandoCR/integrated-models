@@ -3,6 +3,7 @@ package pandastic.studio.models.internal.binding;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
 import pandastic.studio.models.api.binding.BindingOptions;
 import pandastic.studio.models.api.binding.RiggedModel;
 import pandastic.studio.models.api.locomotion.GaitState;
@@ -256,6 +257,169 @@ public final class RiggedModelImpl implements RiggedModel {
     @Override
     public boolean isAlive() {
         return this.alive;
+    }
+
+    private synchronized void control(@NotNull Runnable work) {
+        if (!this.alive || this.rendering == null) {
+            return;
+        }
+        if (this.anchor.isOwnedByCurrentThread()) {
+            work.run();
+            return;
+        }
+        this.anchor.submit(work);
+    }
+
+    private synchronized boolean controlResult(@NotNull java.util.function.BooleanSupplier work) {
+        if (!this.alive || this.rendering == null) {
+            return false;
+        }
+        if (this.anchor.isOwnedByCurrentThread()) {
+            return work.getAsBoolean();
+        }
+        return this.anchor.submit(() -> work.getAsBoolean());
+    }
+
+    @Override
+    public void setScale(float scale) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setScale(scale);
+        });
+    }
+
+    @Override
+    public void setRotation(float pitchDegrees, float yawDegrees) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setRotation(pitchDegrees, yawDegrees);
+        });
+    }
+
+    @Override
+    public void setTint(int rgb) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setTint(rgb);
+        });
+    }
+
+    @Override
+    public void clearTint() {
+        control(() -> {
+            if (this.rendering != null) this.rendering.clearTint();
+        });
+    }
+
+    @Override
+    public void setGlow(boolean glow) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setGlow(glow);
+        });
+    }
+
+    @Override
+    public void setGlowColor(int rgb) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setGlowColor(rgb);
+        });
+    }
+
+    @Override
+    public void setGlint(boolean glint) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setGlint(glint);
+        });
+    }
+
+    @Override
+    public void setBrightness(int blockLight, int skyLight) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setBrightness(blockLight, skyLight);
+        });
+    }
+
+    @Override
+    public void setViewRange(float blocks) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setViewRange(blocks);
+        });
+    }
+
+    @Override
+    public void setVisible(boolean visible) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setVisible(visible);
+        });
+    }
+
+    @Override
+    public void setBoneVisible(@NotNull String boneName, boolean visible) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setBoneVisible(boneName, visible);
+        });
+    }
+
+    @Override
+    public void setBoneTint(@NotNull String boneName, int rgb) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setBoneTint(boneName, rgb);
+        });
+    }
+
+    @Override
+    public void clearBoneTint(@NotNull String boneName) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.clearBoneTint(boneName);
+        });
+    }
+
+    @Override
+    public void setBoneGlow(@NotNull String boneName, boolean glow) {
+        control(() -> {
+            if (this.rendering != null) this.rendering.setBoneGlow(boneName, glow);
+        });
+    }
+
+    @Override
+    public synchronized @NotNull java.util.Set<String> getAnimationNames() {
+        return this.alive && this.rendering != null
+                ? this.rendering.animationNames()
+                : java.util.Collections.emptySet();
+    }
+
+    @Override
+    public boolean playAnimation(@NotNull String animationName) {
+        return controlResult(() ->
+                this.rendering != null && this.rendering.playAnimation(animationName, true));
+    }
+
+    @Override
+    public boolean playAnimationOnce(@NotNull String animationName) {
+        return controlResult(() ->
+                this.rendering != null && this.rendering.playAnimation(animationName, false));
+    }
+
+    @Override
+    public boolean stopAnimation(@NotNull String animationName) {
+        return controlResult(() ->
+                this.rendering != null && this.rendering.stopAnimation(animationName));
+    }
+
+    @Override
+    public boolean replaceAnimation(@NotNull String targetAnimation, @NotNull String newAnimation) {
+        return controlResult(() ->
+                this.rendering != null
+                        && this.rendering.replaceAnimation(targetAnimation, newAnimation));
+    }
+
+    @Override
+    public boolean hide(@NotNull Player player) {
+        return controlResult(() ->
+                this.rendering != null && this.rendering.hide(player));
+    }
+
+    @Override
+    public boolean show(@NotNull Player player) {
+        return controlResult(() ->
+                this.rendering != null && this.rendering.show(player));
     }
 
     /**
