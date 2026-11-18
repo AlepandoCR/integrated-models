@@ -51,8 +51,8 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
         final LocomotionBinding.Builder binding = LocomotionBinding.builder(rig, bounds);
         binding.armSwingAxis(rig.armSwingAxis());
         binding.handSwingAxis(rig.handSwingAxis());
-        bindIfPresent(binding, rig, GaitRole.TORSO, "body");
-        bindIfPresent(binding, rig, GaitRole.HEAD, "head");
+        bindFirstPresent(binding, rig, GaitRole.TORSO, "body", "torso", "squirrel");
+        bindFirstPresent(binding, rig, GaitRole.HEAD, "head", "h_head");
         bindFirstPresent(binding, rig, GaitRole.LEFT_UPPER_ARM, "left_arm", "leftarm", "front_leg1");
         bindFirstPresent(binding, rig, GaitRole.LEFT_FOREARM, "left_forearm", "leftarm_low");
         bindIfPresent(binding, rig, GaitRole.LEFT_HAND, "left_hand");
@@ -148,6 +148,8 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
 
     private static boolean hasLocomotionBones(@NotNull Rig rig) {
         return rig.indexOf("body").isPresent()
+                || rig.indexOf("torso").isPresent()
+                || rig.indexOf("squirrel").isPresent()
                 || rig.indexOf("head").isPresent()
                 || rig.indexOf("left_leg").isPresent()
                 || rig.indexOf("right_leg").isPresent()

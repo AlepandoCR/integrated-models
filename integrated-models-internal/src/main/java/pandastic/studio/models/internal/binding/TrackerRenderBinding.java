@@ -217,6 +217,7 @@ public final class TrackerRenderBinding implements RenderBinding {
         return this.tracker.replace(targetAnimation, newAnimation, modifier);
     }
 
+
     @Override
     public boolean hide(@NotNull Player player) {
         return this.tracker.hide(BukkitAdapter.adapt(player));

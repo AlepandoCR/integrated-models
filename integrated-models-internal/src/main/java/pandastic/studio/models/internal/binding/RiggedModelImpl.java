@@ -635,13 +635,21 @@ public final class RiggedModelImpl implements RiggedModel {
                         this.sample.yawDegrees() - this.sample.headYawDegrees())),
                 (float) Math.toRadians(this.sample.pitchDegrees()));
 
+        final boolean attackChanged;
+        if (!this.attackSeeded) {
+            this.attackSequence = this.sample.attackSequence();
+            this.attackSeeded = true;
+            attackChanged = false;
+        } else if (this.sample.attackSequence() != this.attackSequence) {
+            this.attackSequence = this.sample.attackSequence();
+            attackChanged = true;
+        } else {
+            attackChanged = false;
+        }
+
         final LocomotionStage gait = running.locomotion();
         if (gait != null) {
-            if (!this.attackSeeded) {
-                this.attackSequence = this.sample.attackSequence();
-                this.attackSeeded = true;
-            } else if (this.sample.attackSequence() != this.attackSequence) {
-                this.attackSequence = this.sample.attackSequence();
+            if (attackChanged) {
                 gait.state().triggerAttack();
             }
             // Booleans across the same boundary the driver already crosses, and for the same reason:
