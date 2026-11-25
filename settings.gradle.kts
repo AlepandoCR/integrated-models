@@ -31,9 +31,16 @@ dependencyResolutionManagement {
     }
 }
 
+// integrated-models-bettermodel is the rendering backend AND the module that assembles the shippable
+// shaded jar. It depends on integrated-models-internal; the engine declares nothing about it and
+// discovers it with java.util.ServiceLoader. A second renderer — ModelEngine was the one named — is a
+// third module beside it with its own META-INF/services entry, and would be included here too; only one
+// backend may be on a given jar's classpath, so swapping renderer means swapping which module the root
+// project's copyJar reads from.
 include(
     "integrated-models-api",
     "integrated-models-internal",
+    "integrated-models-bettermodel",
 )
 
 // ---------------------------------------------------------------------------

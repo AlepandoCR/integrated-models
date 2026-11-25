@@ -7,7 +7,10 @@ import org.bukkit.entity.Player;
 import pandastic.studio.models.api.binding.BindingOptions;
 import pandastic.studio.models.api.binding.RiggedModel;
 import pandastic.studio.models.api.locomotion.GaitState;
+import pandastic.studio.models.api.physics.PhysicsDriver;
 import pandastic.studio.models.api.rig.Rig;
+import pandastic.studio.models.internal.sim.ClipSettingsSource;
+import pandastic.studio.models.internal.sim.ClipStage;
 import pandastic.studio.models.internal.sim.DriverHolder;
 import pandastic.studio.models.internal.sim.DriverSampler;
 import pandastic.studio.models.internal.sim.LocomotionStage;
@@ -130,6 +133,17 @@ public final class RiggedModelImpl implements RiggedModel {
     private final @NotNull BindingSettingsSource bindingSettings;
     private final @NotNull LocomotionStageSource locomotion;
 
+    /**
+     * Where the clip thresholds come from, or {@code null} for a binding that drives no clips.
+     *
+     * <p>Nullable rather than a {@code NONE} source, and that is not the same shortcut
+     * {@link LocomotionStageSource#NONE} takes: there is no safe default {@link ClipSettingsSource} to
+     * answer with, because every value in it is configuration and inventing one here would be exactly
+     * the hardcoded tunable the project rule forbids. Absent therefore means "this binding does not
+     * drive clips", which is a feature being off rather than a value being guessed.
+     */
+    private final @Nullable ClipSettingsSource clipSettings;
+
     /** What this binding stated about itself; {@link BindingOptions#defaults()} if it stated nothing. */
     private final @NotNull BindingOptions options;
 
@@ -166,6 +180,19 @@ public final class RiggedModelImpl implements RiggedModel {
      */
     private volatile @Nullable ModelSimulation simulation;
 
+    /**
+     * The model's own clips, driven from the sampled speed, or {@code null} if it has none.
+     *
+     * <p>Lives beside {@link #simulation} rather than inside it, and is advanced from
+     * {@link #sampleOnce()}, because selecting a clip is <strong>region work</strong>: it reaches the
+     * renderer through the live binding, which the simulation thread may not touch. The two are
+     * nevertheless driven from the same driver sample, read once — see {@link #sampleOnce()}.
+     *
+     * <p>Volatile for the same reason {@link #simulation} is: the sampler reads it on a region thread
+     * with no lock, and a body that lands after the model stopped must find null and do nothing.
+     */
+    private volatile @Nullable ClipStage clips;
+
     private volatile boolean alive;
 
     /** The single-use latch. Guarded by {@code this}; see "Stopping exactly once". */
@@ -182,6 +209,26 @@ public final class RiggedModelImpl implements RiggedModel {
      * can differ — between a reload and the call that acts on it.
      */
     private long scheduledPeriodTicks;
+
+    /**
+     * {@link #scheduledPeriodTicks} in seconds, which is the unit the clip layer's hold timer counts in.
+     *
+     * <p>Volatile and separate rather than derived in the sampler, because {@link #scheduledPeriodTicks}
+     * is guarded by {@code this} and {@link #sampleOnce()} deliberately holds no monitor — reading a
+     * {@code long} field without one is a torn read, which here would mean a hold timer counting in the
+     * wrong unit for one sample.
+     */
+    private volatile float samplePeriodSeconds;
+
+    /**
+     * Server ticks in a second.
+     *
+     * <p><strong>A protocol fact, not a tunable.</strong> The anchor sampler is dispatched in ticks
+     * because that is the only unit a platform scheduler accepts, and the clip layer's hold is in
+     * seconds because that is what an operator can reason about; this is the fixed relationship between
+     * them.
+     */
+    private static final float TICKS_PER_SECOND = 20F;
 
     /**
      * A model that differs about nothing, driven entirely by the server's configuration.
@@ -207,6 +254,26 @@ public final class RiggedModelImpl implements RiggedModel {
     }
 
     /**
+     * A model that differs about nothing and drives its own clips.
+     *
+     * @param clipSettings where the clip thresholds and blend times come from, or {@code null} to leave
+     *                     the model's own clips alone
+     */
+    public RiggedModelImpl(
+            @NotNull Rig rig,
+            @NotNull ModelAnchor anchor,
+            @NotNull SimulationLoop loop,
+            @NotNull SimulationSettingsSource simulationSettings,
+            @NotNull BindingSettingsSource bindingSettings,
+            @NotNull LocomotionStageSource locomotion,
+            @Nullable ClipSettingsSource clipSettings,
+            @NotNull Consumer<RiggedModelImpl> onStopped
+    ) {
+        this(rig, anchor, loop, simulationSettings, bindingSettings, locomotion, clipSettings,
+                BindingOptions.defaults(), onStopped);
+    }
+
+    /**
      * @param anchor             where this model is, and the only thing allowed to read it
      * @param loop               the single off-tick task every simulation is stepped from
      * @param simulationSettings where the solver, cadence and teleport thresholds come from
@@ -225,6 +292,34 @@ public final class RiggedModelImpl implements RiggedModel {
             @NotNull BindingOptions options,
             @NotNull Consumer<RiggedModelImpl> onStopped
     ) {
+        this(rig, anchor, loop, simulationSettings, bindingSettings, locomotion, null, options,
+                onStopped);
+    }
+
+    /**
+     * @param anchor             where this model is, and the only thing allowed to read it
+     * @param loop               the single off-tick task every simulation is stepped from
+     * @param simulationSettings where the solver, cadence and teleport thresholds come from
+     * @param bindingSettings    where the sampler's period comes from
+     * @param locomotion         the walk cycle for this rig, or one that answers null
+     * @param clipSettings       where the clip thresholds and blend times come from, or {@code null} to
+     *                           leave the model's own clips alone. A rig that names no clips is
+     *                           unaffected either way
+     * @param options            what this binding differs about, or {@link BindingOptions#defaults()}
+     * @param onStopped          told once when this model has torn down, whether it ever spawned or not
+     */
+    public RiggedModelImpl(
+            @NotNull Rig rig,
+            @NotNull ModelAnchor anchor,
+            @NotNull SimulationLoop loop,
+            @NotNull SimulationSettingsSource simulationSettings,
+            @NotNull BindingSettingsSource bindingSettings,
+            @NotNull LocomotionStageSource locomotion,
+            @Nullable ClipSettingsSource clipSettings,
+            @NotNull BindingOptions options,
+            @NotNull Consumer<RiggedModelImpl> onStopped
+    ) {
+        this.clipSettings = clipSettings;
         this.rig = Objects.requireNonNull(rig, "rig");
         this.anchor = Objects.requireNonNull(anchor, "anchor");
         this.loop = Objects.requireNonNull(loop, "loop");
@@ -254,8 +349,14 @@ public final class RiggedModelImpl implements RiggedModel {
                 : Optional.empty();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Implements the root's {@code isSpawned()}, which is what {@code isAlive()} delegates to — the
+     * two are one state under two names; see {@link pandastic.studio.models.api.model.Model#isAlive()}.
+     */
     @Override
-    public boolean isAlive() {
+    public boolean isSpawned() {
         return this.alive;
     }
 
@@ -469,12 +570,29 @@ public final class RiggedModelImpl implements RiggedModel {
             this.driverSampler.reset();
             this.attackSeeded = false;
 
+            // Built before the simulation, because whether it exists decides whether the simulation
+            // gets a synthesised gait at all. Built here and not in the constructor because it needs the
+            // live binding to play through, and because a handle that never spawned must never have
+            // touched a renderer. Answers null for a rig that names no clips — krampus, and every rig
+            // written before the section existed — which is what leaves those models on exactly the
+            // path they were on.
+            final ClipStage clipStage = this.clipSettings == null
+                    ? null
+                    : ClipStage.of(this.rig, this.clipSettings, new BindingClipPlayer(opened));
+
+            // A model drives its own clips OR a synthesised gait, never both. The clips are
+            // hand-authored by whoever built the model and the walk cycle's cosmetic constants were
+            // chosen rather than measured, so where there is a choice the clip wins — and running the
+            // two together would be two walk cycles at once on the same bones, in different phases.
+            // Physics is unaffected: it adds secondary motion on top of either.
             final ModelSimulation built = new ModelSimulation(
                     this.rig, this.simulationSettings, opened.sink(), this.driver,
-                    this.locomotion.stageFor(this.rig));
+                    clipStage != null ? null : this.locomotion.stageFor(this.rig));
 
-            // Visible to the sampler from here on, which is why it is set before anything is scheduled.
+            // Visible to the sampler from here on, which is why both are set before anything is
+            // scheduled.
             this.simulation = built;
+            this.clips = clipStage;
             registered = this.loop.register(built);
 
             final AnchorTask scheduled =
@@ -489,6 +607,7 @@ public final class RiggedModelImpl implements RiggedModel {
             this.registration = registered;
             this.samplerTask = scheduled;
             this.scheduledPeriodTicks = periodTicks;
+            this.samplePeriodSeconds = periodTicks / TICKS_PER_SECOND;
             this.alive = true;
             committed = true;
             return true;
@@ -516,6 +635,7 @@ public final class RiggedModelImpl implements RiggedModel {
             registered.unregister();
         }
         this.simulation = null;
+        this.clips = null;
         opened.detach();
         // On the owning thread by construction: spawn() refused to run anywhere else.
         opened.close();
@@ -566,6 +686,10 @@ public final class RiggedModelImpl implements RiggedModel {
         // remembered position, though: that is region-confined state and this method is not, so it is
         // reset by the next spawn — on the owning thread — instead of from here.
         this.simulation = null;
+        // Dropped rather than stopped. Stopping a clip is region work that reaches the tracker, and
+        // this method runs from three directions including the platform's retired callback; the
+        // detach-then-release below is what takes the model off the client, which ends the clip with it.
+        this.clips = null;
         this.driver.reset();
 
         // 3. and 4. Stop writing, then release.
@@ -628,8 +752,17 @@ public final class RiggedModelImpl implements RiggedModel {
             return;
         }
 
-        this.driverSampler.sampleInto(this.driver, this.sample.x(), this.sample.y(), this.sample.z(),
-                this.sample.yawDegrees());
+        final PhysicsDriver sampled = this.driverSampler.sample(
+                this.sample.x(), this.sample.y(), this.sample.z(), this.sample.yawDegrees());
+        // One driver per sample, named so that everything downstream of here reads the same one. The
+        // clip selection below is the second reader, and reading the holder back instead would let it
+        // disagree with the simulation about how fast the owner is within a single tick.
+        final PhysicsDriver published =
+                sampled == PhysicsDriver.STILL && this.sample.hasMovementFallback()
+                        ? new PhysicsDriver(
+                                this.sample.fallbackForward(), this.sample.fallbackSide(), 0F, 0F)
+                        : sampled;
+        this.driver.publish(published);
         this.driver.publishHeadOrientation(
                 (float) Math.toRadians(DriverSampler.wrapDegrees(
                         this.sample.yawDegrees() - this.sample.headYawDegrees())),
@@ -645,6 +778,15 @@ public final class RiggedModelImpl implements RiggedModel {
             attackChanged = true;
         } else {
             attackChanged = false;
+        }
+
+        // The model's own clips, from the same sample. Horizontal speed only: a falling model is not
+        // running, and the vertical component would put it into its run clip on every drop.
+        final ClipStage clipStage = this.clips;
+        if (clipStage != null) {
+            clipStage.advance(
+                    (float) Math.hypot(published.forwardSpeed(), published.sideSpeed()),
+                    this.samplePeriodSeconds);
         }
 
         final LocomotionStage gait = running.locomotion();
@@ -701,6 +843,7 @@ public final class RiggedModelImpl implements RiggedModel {
         }
         this.samplerTask = scheduled;
         this.scheduledPeriodTicks = periodTicks;
+        this.samplePeriodSeconds = periodTicks / TICKS_PER_SECOND;
         return true;
     }
 

@@ -1,8 +1,5 @@
 package pandastic.studio.models.internal.model.component.animation;
 
-import kr.toxicity.model.api.animation.AnimationIterator;
-import kr.toxicity.model.api.animation.AnimationModifier;
-import kr.toxicity.model.api.util.function.FloatSupplier;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -12,6 +9,16 @@ import java.util.Optional;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
+/**
+ * The only {@link AnimationMetadata} implementation this plugin accepts, and a plain value.
+ *
+ * <p>Carries no renderer type and performs no translation: mapping these seven options onto a rendering
+ * library's own animation options is the backend module's job, behind
+ * {@link pandastic.studio.models.internal.spi.ModelHandle#playAnimation}. That is why
+ * {@code ModelAnimatorImpl.setMetadata} still gates on {@code instanceof AnimationMetadataImpl} — the
+ * check is about this class being the one whose accessors a backend is written against, not about which
+ * renderer is installed.
+ */
 public class AnimationMetadataImpl implements AnimationMetadata{
 
     private final @Nullable BooleanSupplier predicate;
@@ -73,35 +80,6 @@ public class AnimationMetadataImpl implements AnimationMetadata{
     @Override
     public @NotNull Optional<Boolean> getOverride() {
         return Optional.ofNullable(override);
-    }
-
-    public @NotNull AnimationModifier toAnimationModifier() {
-        var builder = AnimationModifier.builder();
-
-        getPredicate().ifPresent(builder::predicate);
-        getStart().ifPresent(builder::start);
-        getEnd().ifPresent(builder::end);
-        getPriority().ifPresent(builder::priority);
-        getAnimationType().map(AnimationMetadataImpl::toIteratorType).ifPresent(builder::type);
-        getOverride().ifPresent(builder::override);
-
-        getSpeedSupplier().ifPresent(supplier -> {
-            FloatSupplier floatSupplier = () -> {
-                Float value = supplier.get();
-                return value != null ? value : 1F;
-            };
-            builder.speed(floatSupplier);
-        });
-
-        return builder.build();
-    }
-
-    private static @NotNull AnimationIterator.Type toIteratorType(@NotNull AnimationType type) {
-        return switch (type) {
-            case PLAY_ONCE -> AnimationIterator.Type.PLAY_ONCE;
-            case LOOP -> AnimationIterator.Type.LOOP;
-            case HOLD_LAST_FRAME -> AnimationIterator.Type.HOLD_ON_LAST;
-        };
     }
 
     @Contract(value = " -> new", pure = true)

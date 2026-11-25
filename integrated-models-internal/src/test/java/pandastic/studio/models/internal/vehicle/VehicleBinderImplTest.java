@@ -11,7 +11,9 @@ import org.bukkit.entity.Pig;
 import org.bukkit.entity.Strider;
 import org.junit.jupiter.api.Test;
 import pandastic.studio.models.api.vehicle.ControlScheme;
+import pandastic.studio.models.api.vehicle.Vehicle;
 import pandastic.studio.models.api.vehicle.VehicleProfile;
+import pandastic.studio.models.internal.model.ModelManagerImpl;
 import pandastic.studio.models.internal.sim.SimulationLogger;
 
 import java.util.List;
@@ -36,10 +38,13 @@ class VehicleBinderImplTest {
     private final FakeVehicleVisual visual = new FakeVehicleVisual(this.host.sharedJournal());
     private final VehicleFixtures.SteppableClock clock = new VehicleFixtures.SteppableClock();
 
+    /** The published registry, which a create has to fill and a teardown has to empty. */
+    private final ModelManagerImpl registry = new ModelManagerImpl();
+
     private VehicleBinderImpl binder() {
         return new VehicleBinderImpl(root -> this.host, (rig, root) -> this.visual,
                 VehicleSettingsSource.fixed(VehicleFixtures.settings()), this.clock,
-                SimulationLogger.DISCARDING);
+                SimulationLogger.DISCARDING, SeatChartSink.NONE, this.registry);
     }
 
     // ------------------------------------------------------------------ the authority refusal
@@ -116,7 +121,7 @@ class VehicleBinderImplTest {
                     throw new IllegalStateException("bones 'wheel_left', 'wheel_right' not found");
                 },
                 VehicleSettingsSource.fixed(VehicleFixtures.settings()), this.clock,
-                SimulationLogger.DISCARDING);
+                SimulationLogger.DISCARDING, SeatChartSink.NONE, this.registry);
 
         assertAll(
                 () -> assertTrue(assertThrows(IllegalStateException.class,
@@ -157,6 +162,24 @@ class VehicleBinderImplTest {
     }
 
     @Test
+    void aRunningVehicleIsPublishedInTheModelManagerUntilItStops() {
+        final VehicleBinderImpl binder = binder();
+        final VehicleImpl vehicle =
+                binder.create(VehicleFixtures.rig(), VehicleFixtures.profile(), StubEntity.plain());
+
+        assertAll(
+                () -> assertEquals(List.of(vehicle),
+                        List.copyOf(this.registry.getModelsByType(Vehicle.class))),
+                () -> assertTrue(this.registry.getModel(vehicle.getUniqueIdentifier()).isPresent()));
+
+        vehicle.despawn();
+
+        // The visual is a substitute here rather than a bound rigged model, so the vehicle is the only
+        // entry; on a real server its visual is registered alongside it and goes with it.
+        assertEquals(0, this.registry.size());
+    }
+
+    @Test
     void aRootThatVanishedDuringTheDispatchComesBackAlreadyStopped() {
         // A race a caller cannot avoid and cannot act on, which is why it is a return value rather than
         // an exception — and why the handle has to have taken itself out of the registry.
@@ -191,7 +214,7 @@ class VehicleBinderImplTest {
         final long[] period = {3L};
         final VehicleBinderImpl binder = new VehicleBinderImpl(root -> this.host,
                 (rig, root) -> this.visual, () -> VehicleFixtures.settingsWithPeriod(period[0]),
-                this.clock, SimulationLogger.DISCARDING);
+                this.clock, SimulationLogger.DISCARDING, SeatChartSink.NONE, this.registry);
         binder.create(VehicleFixtures.rig(), VehicleFixtures.profile(), StubEntity.plain());
 
         assertEquals(0, binder.reload(), "nothing moved");

@@ -169,7 +169,7 @@ class BoneDirtyTrackerTest {
         // default would agree with this test's first assertion by coincidence and fail the rest.
         final float huge = 0.5F;
         final BoneDirtyTracker configured =
-                BoneDirtyTracker.of(cloak(), new RenderSettings(huge, 8));
+                BoneDirtyTracker.of(cloak(), new RenderSettings(huge, 8, AnimationOwnership.RENDERER));
 
         pass(configured, 0F, 0F, 0F);
 
@@ -187,7 +187,7 @@ class BoneDirtyTrackerTest {
     void aZeroEpsilonFromSettingsMakesEveryChangedBoneDirty() {
         // The "emit everything" end of the lever: an operator who wants no deduplication at all.
         final BoneDirtyTracker exact =
-                BoneDirtyTracker.of(cloak(), new RenderSettings(0F, 4));
+                BoneDirtyTracker.of(cloak(), new RenderSettings(0F, 4, AnimationOwnership.RENDERER));
         pass(exact, 0F, 0F, 0F);
 
         assertAll(
@@ -206,7 +206,7 @@ class BoneDirtyTrackerTest {
         // misconfiguration that presents as "the model does not move", and it should be reachable
         // through configuration rather than only through a code change.
         final BoneDirtyTracker deaf =
-                BoneDirtyTracker.of(cloak(), new RenderSettings(1_000F, 4));
+                BoneDirtyTracker.of(cloak(), new RenderSettings(1_000F, 4, AnimationOwnership.RENDERER));
 
         assertAll(
                 () -> assertArrayEquals(new boolean[]{true, true, true}, pass(deaf, 0F, 0F, 0F),

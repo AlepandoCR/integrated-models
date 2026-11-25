@@ -1,14 +1,10 @@
 package pandastic.studio.models.api.binding;
 
-import org.jetbrains.annotations.NotNull;
 import org.bukkit.entity.Entity;
-import org.bukkit.entity.Player;
-import pandastic.studio.models.api.rig.Rig;
+import org.jetbrains.annotations.NotNull;
+import pandastic.studio.models.api.model.Model;
 
-import java.util.Collections;
 import java.util.Optional;
-import java.util.Set;
-import java.util.UUID;
 
 /**
  * One rig driving one thing in the world: the handle a downstream plugin holds onto.
@@ -16,8 +12,16 @@ import java.util.UUID;
  * <p>Everything that makes a rigged model work — the renderer's tracker, the pose sink, the physics
  * simulation, the per-tick sampler that feeds it — lives behind this interface and is named nowhere in
  * the published jar. A consumer gets a rig from {@link pandastic.studio.models.api.IntegratedModels},
- * hands it to a {@link ModelBinder}, and is given one of these. The four things it can then do are the
- * four methods below.
+ * hands it to a {@link ModelBinder}, and is given one of these.
+ *
+ * <h2>What it is, and what it adds</h2>
+ * It is a {@link Model}: identity, name, rig, spawned state, {@code despawn}/{@code close}, viewers and
+ * the appearance and animation surface all belong to that interface, and are the same methods a
+ * {@link pandastic.studio.models.api.decoration.Decoration}, a
+ * {@link pandastic.studio.models.api.vehicle.Vehicle} and an
+ * {@link pandastic.studio.models.api.model.EntityModel} answer. What this subinterface adds is
+ * <strong>deferred spawning</strong>: a handle that exists, has been validated, and is not in the world
+ * yet.
  *
  * <h2>Bound is not spawned</h2>
  * {@link ModelBinder#bind} validates the rig against the model and nothing else. {@link #spawn()} is
@@ -44,32 +48,18 @@ import java.util.UUID;
  *   <li>{@link #isAlive()} and {@link #getRig()} are safe from any thread.</li>
  * </ul>
  */
-public interface RiggedModel extends AutoCloseable {
+public interface RiggedModel extends Model {
 
     /**
-     * The rig this model drives.
+     * {@inheritDoc}
      *
-     * <p>Fixed for the handle's whole life. A rig is immutable, so holding it is safe — but a
-     * configuration reload replaces the loaded definitions, so a model bound before a reload keeps
-     * driving the definition it was bound to until it is rebound.
-     */
-    @NotNull Rig getRig();
-
-    /**
-     * This model's identity, stable across spawn and despawn.
+     * <p>Present whenever the binding is entity-backed, which is every model a {@link ModelBinder} hands
+     * out; empty only for a custom non-entity anchor.
      *
-     * <p>Not the attached entity's UUID. Two models on one entity are legal — a cloak and a tail, say —
-     * so the entity's identity cannot name a binding.
+     * <p>Binding a model never replaces or owns this entity. The renderer creates its own display
+     * entities, while this one remains the gameplay entity and keeps its AI, traits and metadata.
      */
-    @NotNull UUID getUniqueIdentifier();
-
-    /**
-     * The original entity this model follows, when the binding is entity-backed.
-     *
-     * <p>Binding a model never replaces or owns this entity. BetterModel creates renderer-side
-     * display entities, while this remains the gameplay entity and keeps its AI, traits and metadata.
-     * The optional is empty only for custom non-entity anchors.
-     */
+    @Override
     default @NotNull Optional<Entity> getEntity() {
         return Optional.empty();
     }
@@ -89,106 +79,15 @@ public interface RiggedModel extends AutoCloseable {
     boolean spawn();
 
     /**
-     * Stops simulating and releases everything this model holds.
+     * {@inheritDoc}
      *
      * <p>Idempotent, safe from any thread, and safe to call on a model that never spawned. The teardown
      * runs exactly once however many callers reach it and from however many threads, because the thing
      * most likely to call it is the platform noticing the entity is gone at the same moment as a plugin
      * shutting down.
-     */
-    void despawn();
-
-    /** Whether this model is spawned and being simulated. */
-    boolean isAlive();
-
-    /**
-     * Changes the scale of the whole model.
      *
-     * @param scale scale multiplier; 1.0 keeps the model's original size
-     */
-    default void setScale(float scale) {}
-
-    /**
-     * Adds a fixed pitch/yaw rotation to the model.
-     *
-     * @param pitchDegrees pitch in degrees
-     * @param yawDegrees yaw in degrees
-     */
-    default void setRotation(float pitchDegrees, float yawDegrees) {}
-
-    /** Applies a tint to every visible bone. The RGB value uses {@code 0xRRGGBB}. */
-    default void setTint(int rgb) {}
-
-    /** Removes the model tint. */
-    default void clearTint() {}
-
-    /** Enables or disables the whole-model glow outline. */
-    default void setGlow(boolean glow) {}
-
-    /** Changes the whole-model glow outline color. The RGB value uses {@code 0xRRGGBB}. */
-    default void setGlowColor(int rgb) {}
-
-    /** Enables or disables the enchanted-item glint. */
-    default void setGlint(boolean glint) {}
-
-    /** Changes block and sky brightness for every display bone. */
-    default void setBrightness(int blockLight, int skyLight) {}
-
-    /** Changes the model's rendering distance. */
-    default void setViewRange(float blocks) {}
-
-    /** Shows or hides the whole model. */
-    default void setVisible(boolean visible) {}
-
-    /** Shows or hides one rendered bone and, where supported, its children. */
-    default void setBoneVisible(@NotNull String boneName, boolean visible) {}
-
-    /** Tints one rendered bone and, where supported, its children. */
-    default void setBoneTint(@NotNull String boneName, int rgb) {}
-
-    /** Removes tint from one rendered bone. */
-    default void clearBoneTint(@NotNull String boneName) {}
-
-    /** Enables or disables glow on one rendered bone. */
-    default void setBoneGlow(@NotNull String boneName, boolean glow) {}
-
-    /** Names available for {@link #playAnimation(String)} and {@link #replaceAnimation(String, String)}. */
-    @NotNull
-    default Set<String> getAnimationNames() {
-        return Collections.emptySet();
-    }
-
-    /**
-     * Starts a looping animation.
-     *
-     * @return true if the animation exists and was started
-     */
-    default boolean playAnimation(@NotNull String animationName) { return false; }
-
-    /** Starts an animation once and lets it finish at its last frame. */
-    default boolean playAnimationOnce(@NotNull String animationName) { return false; }
-
-    /** Stops a currently running animation. */
-    default boolean stopAnimation(@NotNull String animationName) { return false; }
-
-    /** Stops {@code targetAnimation} and starts {@code newAnimation} in its place. */
-    default boolean replaceAnimation(@NotNull String targetAnimation, @NotNull String newAnimation) { return false; }
-
-    /** Hides this model from one player. */
-    default boolean hide(@NotNull Player player) { return false; }
-
-    /** Shows this model to one player. */
-    default boolean show(@NotNull Player player) { return false; }
-
-    /**
-     * {@link #despawn()}, so a model can be managed with try-with-resources.
-     *
-     * <p>Declared without the checked exception {@link AutoCloseable} permits: nothing about releasing a
-     * model can fail in a way a caller could handle, and a checked exception here would force a catch
-     * block at every call site that does nothing.
+     * <p>The entity itself is left alone: the caller supplied it, so the caller owns its lifetime.
      */
     @Override
-    default void close() {
-        despawn();
-    }
+    void despawn();
 }

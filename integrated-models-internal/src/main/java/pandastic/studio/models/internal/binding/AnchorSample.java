@@ -34,6 +34,9 @@ public final class AnchorSample {
     private boolean sneaking;
     private boolean airborne;
     private long attackSequence;
+    private float fallbackForward;
+    private float fallbackSide;
+    private boolean movementFallback;
 
     /** Overwrites every field. Called from the owning region thread and nowhere else. */
     public void set(
@@ -56,11 +59,35 @@ public final class AnchorSample {
         this.sneaking = sneaking;
         this.airborne = airborne;
         this.attackSequence = attackSequence;
+        this.fallbackForward = 0F;
+        this.fallbackSide = 0F;
+        this.movementFallback = false;
     }
 
     /** Compatibility overload for anchors that do not expose an attack signal. */
     public void set(double x, double y, double z, float yawDegrees, boolean sneaking, boolean airborne) {
         set(x, y, z, yawDegrees, yawDegrees, 0F, sneaking, airborne, 0L);
+    }
+
+    /** Supplies a movement proxy for entities whose position may remain unchanged for a sample. */
+    public void setMovementFallback(float forward, float side) {
+        this.fallbackForward = forward;
+        this.fallbackSide = side;
+        this.movementFallback = Float.isFinite(forward) && Float.isFinite(side)
+                && (forward != 0F || side != 0F);
+    }
+
+    /** Whether this reading carries a live velocity fallback. */
+    public boolean hasMovementFallback() {
+        return this.movementFallback;
+    }
+
+    public float fallbackForward() {
+        return this.fallbackForward;
+    }
+
+    public float fallbackSide() {
+        return this.fallbackSide;
     }
 
     /** World x, in blocks. */

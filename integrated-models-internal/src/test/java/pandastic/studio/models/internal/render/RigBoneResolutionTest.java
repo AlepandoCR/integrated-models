@@ -166,7 +166,7 @@ class RigBoneResolutionTest {
     private static String failureWithLimit(RigBoneResolution resolution, int limit) {
         return assertThrows(IllegalStateException.class,
                 () -> resolution.requireBindable(
-                        new RenderSettings(RenderFixtures.EPSILON_RADIANS, limit))).getMessage();
+                        new RenderSettings(RenderFixtures.EPSILON_RADIANS, limit, AnimationOwnership.RENDERER))).getMessage();
     }
 
     private static List<String> manyNames(int count) {

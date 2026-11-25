@@ -13,8 +13,13 @@ build/
 out/
 !**/src/main/**/out/
 !**/src/test/**/out/
-rigs
-models
+# The operator's own asset directories at the repository root: the rig files a developer is testing
+# with and the .bbmodel sources. Anchored with a leading and trailing slash on purpose — written bare,
+# `models` matches a directory of that name at ANY depth, which is every single source file in this
+# project (pandastic/studio/models/**). The effect was that a new source file was silently invisible
+# to `git add`, with `git status` showing nothing and `git check-ignore` the only way to find out.
+/rigs/
+/models/
 ### Eclipse ###
 .apt_generated
 .classpath
@@ -39,3 +44,9 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+### Agent instructions ###
+# CLAUDE.md is this repository's briefing for Claude Code: it is working notes about the project's
+# invariants, not part of the project. Keeping it out of the tree means a clone of the public repo
+# carries the code and the guides and nothing about how it gets worked on. It stays on disk — it is
+# only untracked — so editing it still takes effect locally.
+CLAUDE.md

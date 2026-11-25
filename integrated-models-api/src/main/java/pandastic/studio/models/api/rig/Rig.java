@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 
@@ -36,6 +37,17 @@ import java.util.Set;
  * already finished, so an out-of-order chain would read a one-step-stale parent angle — a defect that
  * shows up as a chain lagging its own root by a frame and is invisible in code review. Making the
  * ordering a construction-time requirement removes the failure mode instead of documenting it.
+ *
+ * <h2>Three things a rig carries besides bones</h2>
+ * <ul>
+ *   <li>{@link #kind()} — what the rig is for. It gates the rest of the format rather than changing how
+ *       anything moves: {@link RigKind#VEHICLE} is the only kind that may declare seats.</li>
+ *   <li>{@link #seats()} — where riders sit, in file order, which is the order they are offered.
+ *       <strong>Each seat names a locator</strong>, never a bone; see {@link RigSeat}.</li>
+ *   <li>{@link #clips()} — which of the model's <em>own</em> animations plays in each locomotion state,
+ *       and {@link RigBone#animationOwned()} per bone. Both exist so the layer that composes our pose
+ *       with the renderer's animation pass can see where the two overlap instead of racing it.</li>
+ * </ul>
  */
 public final class Rig {
 
@@ -46,39 +58,58 @@ public final class Rig {
 
     private final @NotNull String name;
     private final @NotNull String modelId;
+    private final @NotNull RigKind kind;
     private final @NotNull List<RigBone> bones;
     private final @NotNull Map<String, Integer> indexByName;
     private final int[] physicsBones;
+    private final int[] animationOwnedBones;
     private final @NotNull ArmSwingAxis armSwingAxis;
     private final @NotNull ArmSwingAxis handSwingAxis;
+    private final @NotNull List<RigSeat> seats;
+    private final @NotNull RigClips clips;
 
     private Rig(
             @NotNull String name,
             @NotNull String modelId,
+            @NotNull RigKind kind,
             @NotNull List<RigBone> bones,
             @NotNull Map<String, Integer> indexByName,
             @NotNull ArmSwingAxis armSwingAxis,
-            @NotNull ArmSwingAxis handSwingAxis
+            @NotNull ArmSwingAxis handSwingAxis,
+            @NotNull List<RigSeat> seats,
+            @NotNull RigClips clips
     ) {
         this.name = name;
         this.modelId = modelId;
+        this.kind = kind;
         this.bones = List.copyOf(bones);
         this.indexByName = Map.copyOf(indexByName);
         this.armSwingAxis = armSwingAxis;
         this.handSwingAxis = handSwingAxis;
+        this.seats = List.copyOf(seats);
+        this.clips = clips;
 
         int physicsCount = 0;
+        int animatedCount = 0;
         for (final RigBone bone : this.bones) {
             if (bone.hasPhysics()) {
                 physicsCount++;
             }
-
+            if (bone.animationOwned()) {
+                animatedCount++;
+            }
         }
         this.physicsBones = new int[physicsCount];
+        this.animationOwnedBones = new int[animatedCount];
         int cursor = 0;
+        int animatedCursor = 0;
         for (int index = 0; index < this.bones.size(); index++) {
-            if (this.bones.get(index).hasPhysics()) {
+            final RigBone bone = this.bones.get(index);
+            if (bone.hasPhysics()) {
                 this.physicsBones[cursor++] = index;
+            }
+            if (bone.animationOwned()) {
+                this.animationOwnedBones[animatedCursor++] = index;
             }
         }
 
@@ -89,12 +120,16 @@ public final class Rig {
      *
      * <p>This is used when a consumer wants the renderer's complete authored model without declaring
      * secondary-motion physics. It is intentionally not produced by the YAML rig builder.
+     *
+     * <p>A {@link RigKind#CREATURE}, like a file that names no kind: a derived rig makes no claim about
+     * what the model is for, and creature is the kind that gates nothing.
      */
     public static @NotNull Rig modelOnly(@NotNull String modelId) {
         if (modelId.isBlank()) {
             throw new IllegalArgumentException("A model-only rig needs a model id");
         }
-        return new Rig(modelId, modelId, List.of(), Map.of(), ArmSwingAxis.PITCH, ArmSwingAxis.PITCH);
+        return new Rig(modelId, modelId, RigKind.CREATURE, List.of(), Map.of(),
+                ArmSwingAxis.PITCH, ArmSwingAxis.PITCH, List.of(), RigClips.NONE);
     }
 
     /**
@@ -109,8 +144,10 @@ public final class Rig {
         if (normalized.isBlank()) {
             throw new IllegalArgumentException("A model-only rig needs a root bone");
         }
-        return new Rig(modelId, modelId, List.of(new RigBone(normalized, RigBone.NO_PARENT, null)),
-                Map.of(normalized, 0), ArmSwingAxis.PITCH, ArmSwingAxis.PITCH);
+        return new Rig(modelId, modelId, RigKind.CREATURE,
+                List.of(new RigBone(normalized, RigBone.NO_PARENT, null, false)),
+                Map.of(normalized, 0), ArmSwingAxis.PITCH, ArmSwingAxis.PITCH,
+                List.of(), RigClips.NONE);
     }
 
     /**
@@ -168,6 +205,16 @@ public final class Rig {
         return this.modelId;
     }
 
+    /**
+     * What this rig is for, which decides whether it may declare seats.
+     *
+     * <p>{@link RigKind#CREATURE} unless the rig says otherwise, so a rig built before kinds existed
+     * means what it always meant.
+     */
+    public @NotNull RigKind kind() {
+        return this.kind;
+    }
+
     /** The authored local axis used by the generic arm gait and attack swing. */
     public @NotNull ArmSwingAxis armSwingAxis() {
         return this.armSwingAxis;
@@ -214,10 +261,75 @@ public final class Rig {
         return this.physicsBones.length;
     }
 
+    /**
+     * Indices of the bones a shipped clip keyframes, ascending.
+     *
+     * <p>The list the composition layer needs: on these bones the renderer is already writing the
+     * display every frame an animation plays, so anything this plugin sends has to be composed against
+     * that animation rather than against the static bind pose. Everything else can be written
+     * absolutely.
+     *
+     * @return a fresh array; callers may keep and mutate it
+     * @see RigBone#animationOwned()
+     */
+    public int[] animationOwnedBoneIndices() {
+        return this.animationOwnedBones.clone();
+    }
+
+    /** How many bones a shipped clip keyframes. */
+    public int animationOwnedBoneCount() {
+        return this.animationOwnedBones.length;
+    }
+
+    /** Which of the model's own clips plays in each locomotion state. {@link RigClips#NONE} if none. */
+    public @NotNull RigClips clips() {
+        return this.clips;
+    }
+
+    /**
+     * Where riders sit, in the order the rig declared them — which is the order they are offered, so
+     * that two servers with the same file seat their players the same way.
+     *
+     * <p>Empty for every kind but {@link RigKind#VEHICLE}, and legitimately empty for a vehicle too: a
+     * vehicle rig whose model has no locators yet is a rig that loads and carries nobody.
+     *
+     * @return an unmodifiable list
+     */
+    public @NotNull List<RigSeat> seats() {
+        return this.seats;
+    }
+
+    /** How many seats this rig declares. */
+    public int seatCount() {
+        return this.seats.size();
+    }
+
+    /** The seat a rider controls the vehicle from, or empty if the rig declares none. */
+    public @NotNull Optional<RigSeat> driverSeat() {
+        for (final RigSeat seat : this.seats) {
+            if (seat.driver()) {
+                return Optional.of(seat);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** The seat called {@code seatName}, matched case-insensitively, or empty if there is none. */
+    public @NotNull Optional<RigSeat> findSeat(@NotNull String seatName) {
+        final String key = seatName.trim().toLowerCase(Locale.ROOT);
+        for (final RigSeat seat : this.seats) {
+            if (seat.name().equals(key)) {
+                return Optional.of(seat);
+            }
+        }
+        return Optional.empty();
+    }
+
     @Override
     public @NotNull String toString() {
-        return "Rig[" + this.name + " -> " + this.modelId + ", " + this.bones.size()
-                + " bones, " + this.physicsBones.length + " simulated]";
+        return "Rig[" + this.name + " -> " + this.modelId + ", " + this.kind.key() + ", "
+                + this.bones.size() + " bones, " + this.physicsBones.length + " simulated, "
+                + this.seats.size() + " seats]";
     }
 
     /** Accumulates bones and validates the rig as a whole. */
@@ -231,6 +343,28 @@ public final class Rig {
         private final @NotNull Map<String, Integer> indexByName = new HashMap<>();
         private @NotNull ArmSwingAxis armSwingAxis = ArmSwingAxis.PITCH;
         private @NotNull ArmSwingAxis handSwingAxis = ArmSwingAxis.PITCH;
+
+        /**
+         * Seeded {@link RigKind#CREATURE}, which is the kind that gates nothing rather than a guess.
+         *
+         * <p>Not a configurable default: it is what a rig that says nothing about its kind has always
+         * meant, so moving it would change the meaning of every file written before the key existed.
+         */
+        private @NotNull RigKind kind = RigKind.CREATURE;
+
+        private @NotNull RigClips clips = RigClips.NONE;
+        private final @NotNull List<RigSeat> seats = new ArrayList<>();
+
+        /**
+         * The operator's seat limits, which only a builder that is given seats needs.
+         *
+         * <p>Null until {@link #seatBounds(SeatBounds)} supplies them, and {@link #seat(RigSeat)}
+         * refuses rather than invents: there is no figure this class could default to that would not be
+         * a tunable written as a literal, and a rig with no seats — which is almost all of them — must
+         * not be made to carry bounds it has no use for. That is also why they are not a
+         * {@link Rig#builder} parameter: every existing caller would have to pass one.
+         */
+        private @Nullable SeatBounds seatBounds;
 
         private Builder(
                 @NotNull String name,
@@ -248,6 +382,73 @@ public final class Rig {
             this.modelId = modelId;
             this.rigBounds = rigBounds;
             this.profileBounds = profileBounds;
+        }
+
+        /**
+         * Sets what this rig is for.
+         *
+         * <p>Only {@link RigKind#VEHICLE} may carry seats, and that is checked at {@link #build()}
+         * rather than here, so a caller may set the kind and the seats in either order.
+         */
+        public @NotNull Builder kind(@NotNull RigKind kind) {
+            this.kind = kind;
+            return this;
+        }
+
+        /** Binds the model's own animation clips to locomotion states. */
+        public @NotNull Builder clips(@NotNull RigClips clips) {
+            this.clips = clips;
+            return this;
+        }
+
+        /**
+         * Supplies the ranges every seat is accepted within. Required before the first
+         * {@link #seat(RigSeat)}.
+         */
+        public @NotNull Builder seatBounds(@NotNull SeatBounds bounds) {
+            this.seatBounds = bounds;
+            return this;
+        }
+
+        /**
+         * Adds a seat, after the seats already added — the order riders are offered them in.
+         *
+         * @throws IllegalStateException    if no {@link #seatBounds(SeatBounds)} were supplied, which is
+         *                                  a caller that has not said what this server permits rather
+         *                                  than a bad seat
+         * @throws IllegalArgumentException if the seat ceiling is reached, if the name duplicates one
+         *                                  already added, if a second driver's seat is declared, or if an
+         *                                  offset is outside the supplied bounds
+         */
+        public @NotNull Builder seat(@NotNull RigSeat seat) {
+            final SeatBounds bounds = this.seatBounds;
+            if (bounds == null) {
+                throw new IllegalStateException(
+                        "Rig '" + this.name + "' cannot accept the seat '" + seat.name()
+                                + "' before seatBounds(...): how many seats and how far a rider may be"
+                                + " offset are the operator's figures, and this class has none to assume.");
+            }
+            if (this.seats.size() >= bounds.maxSeats()) {
+                throw new IllegalArgumentException(
+                        "Rig '" + this.name + "' exceeds the " + bounds.maxSeats() + "-seat ceiling");
+            }
+            for (final RigSeat existing : this.seats) {
+                if (existing.name().equals(seat.name())) {
+                    throw new IllegalArgumentException(
+                            "Rig '" + this.name + "' declares the seat '" + seat.name() + "' twice."
+                                    + " Seat names are matched case-insensitively, so a consumer asking"
+                                    + " for one would get whichever came first.");
+                }
+                if (existing.driver() && seat.driver()) {
+                    throw new IllegalArgumentException(
+                            "Rig '" + this.name + "': seats '" + existing.name() + "' and '"
+                                    + seat.name() + "' both drive. A vehicle takes its input from one"
+                                    + " rider, so the second would never be asked for any.");
+                }
+            }
+            seat.requireWithin(bounds);
+            this.seats.add(seat);
+            return this;
         }
 
         /** Sets the authored local axis used for arm locomotion. */
@@ -283,6 +484,24 @@ public final class Rig {
                 @Nullable String parentName,
                 @Nullable PhysicsProfile physics
         ) {
+            return bone(boneName, parentName, physics, false);
+        }
+
+        /**
+         * Adds a bone, saying whether a clip shipped inside the model already keyframes it.
+         *
+         * @param animationOwned see {@link RigBone#animationOwned()}. Legal together with
+         *                       {@code physics}, and suspicious: the two write the same display. A rig
+         *                       <em>file</em> that does both gets a warning; a programmatic caller is
+         *                       assumed to know what its asset's clip touches
+         * @throws IllegalArgumentException if the name is a duplicate or the parent is unknown
+         */
+        public @NotNull Builder bone(
+                @NotNull String boneName,
+                @Nullable String parentName,
+                @Nullable PhysicsProfile physics,
+                boolean animationOwned
+        ) {
             final String key = normalise(boneName);
             if (this.indexByName.containsKey(key)) {
                 throw new IllegalArgumentException(
@@ -309,7 +528,7 @@ public final class Rig {
             }
 
             this.indexByName.put(key, this.bones.size());
-            this.bones.add(new RigBone(key, parentIndex, compile(physics)));
+            this.bones.add(new RigBone(key, parentIndex, compile(physics), animationOwned));
             return this;
         }
 
@@ -337,14 +556,29 @@ public final class Rig {
                     physics.limits().withPitchCeiling(ceiling));
         }
 
-        /** Validates and freezes the rig. */
+        /**
+         * Validates and freezes the rig.
+         *
+         * @throws IllegalArgumentException if the rig has no bones, or if it carries seats without being
+         *                                 a {@link RigKind#VEHICLE}
+         */
         public @NotNull Rig build() {
             if (this.bones.isEmpty()) {
                 throw new IllegalArgumentException("Rig '" + this.name + "' has no bones");
             }
-            return new Rig(this.name, this.modelId, this.bones,
+            if (!this.seats.isEmpty() && !this.kind.permitsSeats()) {
+                // Not silently dropped and not silently promoted to a vehicle. Either would make the
+                // rig mean something the caller did not write, and one of the two means a vehicle that
+                // loads with nobody able to board it.
+                throw new IllegalArgumentException(
+                        "Rig '" + this.name + "' is a " + this.kind.key() + " and declares "
+                                + this.seats.size() + " seat(s). Only a " + RigKind.VEHICLE.key()
+                                + " may: a seat is a place a rider sits on something that moves under"
+                                + " them.");
+            }
+            return new Rig(this.name, this.modelId, this.kind, this.bones,
                     Collections.unmodifiableMap(this.indexByName), this.armSwingAxis,
-                    this.handSwingAxis);
+                    this.handSwingAxis, this.seats, this.clips);
         }
     }
 }

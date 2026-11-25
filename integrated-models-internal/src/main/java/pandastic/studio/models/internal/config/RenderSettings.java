@@ -1,8 +1,10 @@
 package pandastic.studio.models.internal.config;
 
+import org.jetbrains.annotations.NotNull;
 import pandastic.studio.core.service.api.config.ConfigFormat;
 import pandastic.studio.core.service.api.config.ConfigValue;
 import pandastic.studio.core.service.api.config.Configurable;
+import pandastic.studio.models.internal.render.AnimationOwnership;
 
 /**
  * Declaration of {@code render.yml}: how often a pose leaves the server, and how little a bone has to
@@ -114,5 +116,28 @@ public interface RenderSettings {
     @ConfigValue(comment = "How many model bone names a rig binding error lists before summarising the rest. Enough to spot a typo, few enough not to put a page of text in the console.")
     default int boneNamesInMessage() {
         return 32;
+    }
+
+    /**
+     * What to do with a bone one of the model's own animation clips already keyframes, by name.
+     *
+     * <p>The setting that decides whether an animated model moves cleanly. A bone's display transform is
+     * absolute and two writers send it — the renderer's animation pass and this plugin's pose sink — so
+     * on a bone a clip keyframes the display shows whichever packet arrived last and the bone alternates
+     * between the two answers at the emission rate. {@code animation-owned} in a rig file is where a
+     * rigger declares which bones those are; this is what the render layer does about it.
+     *
+     * <p>A {@code String} rather than the enum because the generated configuration class reads a key
+     * through {@code getString}; {@link ConfigMapper} resolves it and <strong>refuses the reload</strong>
+     * when it names no policy, rather than falling back — an operator who wrote {@code render} meant
+     * {@code renderer}, and silently substituting a default would leave them believing a policy is in
+     * force that is not.
+     *
+     * @return the policy's name
+     * @see pandastic.studio.models.internal.render.AnimationOwnership
+     */
+    @ConfigValue(comment = "What to do with a bone the model's own animation clips keyframe (a rig file's animation-owned flag). renderer: never write it, so the authored clip plays untouched. compose: add our physics on top of the clip's live rotation (rotation only; the clip's position keyframes are not reproduced). override: write it absolutely and let the two writers race, which is the pre-3.6 behaviour and makes an animated bone flicker.")
+    default @NotNull String animationOwnedBonePolicy() {
+        return AnimationOwnership.RENDERER.key();
     }
 }

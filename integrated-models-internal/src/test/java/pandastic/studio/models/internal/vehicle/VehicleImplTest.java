@@ -1,6 +1,9 @@
 package pandastic.studio.models.internal.vehicle;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.entity.Player;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 import pandastic.studio.models.api.vehicle.RiderIntent;
 import pandastic.studio.models.api.vehicle.VehicleSteering;
@@ -30,7 +33,17 @@ class VehicleImplTest {
     private static final float EPSILON = 1.0E-5F;
 
     private final FakeVehicleHost host = new FakeVehicleHost();
-    private final FakeVehicleVisual visual = new FakeVehicleVisual(this.host.sharedJournal());
+
+    /**
+     * The model's locators, which is where the fixture rig's single driver's seat lives.
+     *
+     * <p>Held as a field so a test can move the locator between two steps, which is what an animation
+     * does and the reason a carrier is followed even when the vehicle has not moved.
+     */
+    private final FakeSeatLocators locators = VehicleFixtures.locators();
+
+    private final FakeVehicleVisual visual =
+            new FakeVehicleVisual(this.host.sharedJournal()).locators(this.locators);
     private final VehicleFixtures.SteppableClock clock = new VehicleFixtures.SteppableClock();
     private final List<Throwable> logged = new ArrayList<>();
     private final AtomicInteger stoppedCount = new AtomicInteger();
@@ -42,7 +55,7 @@ class VehicleImplTest {
     private VehicleImpl vehicle(VehicleSettingsSource settings) {
         return new VehicleImpl(VehicleFixtures.rig(), VehicleFixtures.profile(), this.host,
                 this.visual, settings, this.clock,
-                (message, thrown) -> this.logged.add(thrown),
+                (message, thrown) -> this.logged.add(thrown), SeatChartSink.NONE,
                 stopped -> this.stoppedCount.incrementAndGet());
     }
 
@@ -125,7 +138,8 @@ class VehicleImplTest {
         final VehicleImpl vehicle = new VehicleImpl(VehicleFixtures.rig(), VehicleFixtures.profile(),
                 this.host, new FakeVehicleVisual(this.host.sharedJournal()).refuseSpawn(),
                 VehicleSettingsSource.fixed(VehicleFixtures.settings()), this.clock,
-                SimulationLogger.DISCARDING, stopped -> this.stoppedCount.incrementAndGet());
+                SimulationLogger.DISCARDING, SeatChartSink.NONE,
+                stopped -> this.stoppedCount.incrementAndGet());
 
         assertAll(
                 () -> assertFalse(vehicle.start()),
@@ -140,7 +154,8 @@ class VehicleImplTest {
                 new FakeVehicleVisual(this.host.sharedJournal()).throwOnSpawn();
         final VehicleImpl vehicle = new VehicleImpl(VehicleFixtures.rig(), VehicleFixtures.profile(),
                 this.host, broken, VehicleSettingsSource.fixed(VehicleFixtures.settings()), this.clock,
-                SimulationLogger.DISCARDING, stopped -> this.stoppedCount.incrementAndGet());
+                SimulationLogger.DISCARDING, SeatChartSink.NONE,
+                stopped -> this.stoppedCount.incrementAndGet());
 
         assertAll(
                 () -> assertThrows(IllegalStateException.class, vehicle::start),
@@ -185,45 +200,169 @@ class VehicleImplTest {
                 .getMessage().contains("single use"));
     }
 
+    // ------------------------------------------------------------------ the seat chart
+
+    @Test
+    void startingLogsTheSeatChartAfterTheVisualHasSpawned() {
+        // After the visual because a seat is a locator of a live model, and before the loop because a
+        // seat that did not resolve has to be reported whether or not the vehicle is ever driven.
+        final RecordingChartSink sink = new RecordingChartSink();
+        final VehicleImpl vehicle = new VehicleImpl(VehicleFixtures.seatedRig(),
+                VehicleFixtures.profile(), this.host,
+                new FakeVehicleVisual(this.host.sharedJournal())
+                        .locators(VehicleFixtures.seatedLocators()),
+                VehicleSettingsSource.fixed(VehicleFixtures.settings()), this.clock,
+                SimulationLogger.DISCARDING, sink,
+                stopped -> this.stoppedCount.incrementAndGet());
+
+        assertTrue(vehicle.start());
+
+        assertAll(
+                () -> assertEquals(0, sink.info.size(),
+                        "two of the four seats are unusable, so the whole chart is a warning"),
+                () -> assertEquals(8, sink.warn.size(),
+                        () -> "top, four seats, summary, note, bottom: " + sink.warn),
+                () -> assertTrue(sink.warn.get(3).contains("BONE"),
+                        () -> "the seat naming a bone has to be named: " + sink.warn),
+                () -> assertTrue(sink.warn.get(4).contains("MISSING"),
+                        () -> "and so does the one naming nothing: " + sink.warn),
+                () -> assertTrue(sink.warn.get(5).contains("2 unusable"), () -> sink.warn.toString())
+        );
+    }
+
+    @Test
+    void anOperatorWhoTurnedTheChartOffGetsNoSeatLinesAtAll() {
+        // Including the ones about seats that failed, which is the cost of switching it off and is
+        // deliberate: a server that has read its chart once should be able to have its console back.
+        final RecordingChartSink sink = new RecordingChartSink();
+        final VehicleImpl vehicle = new VehicleImpl(VehicleFixtures.seatedRig(),
+                VehicleFixtures.profile(), this.host,
+                new FakeVehicleVisual(this.host.sharedJournal())
+                        .locators(VehicleFixtures.seatedLocators()),
+                VehicleSettingsSource.fixed(
+                        VehicleFixtures.settingsWithSeats(VehicleFixtures.silentSeatSettings())),
+                this.clock, SimulationLogger.DISCARDING, sink,
+                stopped -> this.stoppedCount.incrementAndGet());
+
+        assertTrue(vehicle.start());
+
+        assertAll(
+                () -> assertEquals(0, sink.info.size()),
+                () -> assertEquals(0, sink.warn.size()),
+                () -> assertEquals(2, vehicle.getSeatChart().usableCount(),
+                        "the seats are still resolved; only the reporting is off")
+        );
+    }
+
     // ------------------------------------------------------------------ mounting
 
     @Test
-    void mountingSeatsTheRiderAndPublishesThem() {
+    void mountingSeatsTheRiderOnACarrierAtTheLocatorAndPublishesThem() {
+        // The whole point of the layer: the rider does not ride the root entity, they ride an invisible
+        // carrier standing on the model's locator. The fixture's locator is half a block above the
+        // model's origin and the configured carrier trim is another quarter.
         final VehicleImpl vehicle = started();
         final Player rider = StubPlayer.named("alepando");
 
         assertAll(
                 () -> assertTrue(vehicle.mount(rider)),
                 () -> assertSame(rider, vehicle.getRider().orElseThrow()),
-                () -> assertFalse(vehicle.mount(StubPlayer.named("someone-else")),
-                        "a second rider is refused rather than replacing the first")
+                () -> assertEquals(List.of(rider), vehicle.getRiders()),
+                () -> assertEquals(0.75D, this.host.onlyCarrier().y(), EPSILON,
+                        "the carrier is spawned at the seat rather than moved there a tick later"),
+                () -> assertSame(rider, this.host.onlyCarrier().rider()),
+                () -> assertFalse(this.host.wasEjected(),
+                        "nothing may ride the root entity, so nothing is ejected from it")
         );
     }
 
     @Test
-    void aMountTheServerWouldHandToTheClientIsUndoneAndRefusedLoudly() {
-        // The design trap, and the reason the check is here rather than at creation: the server's answer
-        // depends on who the first passenger is, so before the mount there is nothing to ask about.
+    void aSecondRiderIsRefusedWhenTheRigDeclaresOneSeat() {
         final VehicleImpl vehicle = started();
-        this.host.clientSteered(true);
+        final Player rider = StubPlayer.named("alepando");
+        assertTrue(vehicle.mount(rider));
+
+        assertAll(
+                () -> assertFalse(vehicle.mount(StubPlayer.named("someone-else")),
+                        "a rig with one seat carries one rider"),
+                () -> assertSame(rider, vehicle.getRider().orElseThrow()),
+                () -> assertEquals(1, this.host.carriers().size(),
+                        "a refused mount must not leave a carrier behind")
+        );
+    }
+
+    @Test
+    void aSeatThatResolvedToNothingCarriesNobody() {
+        // The normal case today: no model in this repository contains a locator, so a rig's seats
+        // resolve to nothing. A refusal rather than a seat on the root entity, which is the fallback
+        // this design deliberately does not have.
+        this.visual.locators(new FakeSeatLocators());
+        final VehicleImpl vehicle = started();
+
+        assertAll(
+                () -> assertFalse(vehicle.mount(StubPlayer.named("alepando"))),
+                () -> assertTrue(vehicle.getRider().isEmpty()),
+                () -> assertEquals(List.of(), this.host.carriers()),
+                () -> assertEquals(1, vehicle.getSeatChart().unusableCount())
+        );
+    }
+
+    @Test
+    void aSeatThatResolvedToABoneCarriesNobodyAndIsReportedAsTheMistakeItIs() {
+        // The mistake the locator policy exists to catch. Four models in this repository carry a bone
+        // called 'mount'; it is not a seat, and naming it must not quietly work.
+        this.visual.locators(new FakeSeatLocators().bone("saddle"));
+        final VehicleImpl vehicle = started();
+
+        assertAll(
+                () -> assertFalse(vehicle.mount(StubPlayer.named("alepando"))),
+                () -> assertEquals(List.of(), this.host.carriers()),
+                () -> assertEquals(SeatLocators.Kind.BONE,
+                        vehicle.getSeatChart().entries().getFirst().kind())
+        );
+    }
+
+    @Test
+    void aDriverTheServerWouldHandToTheClientIsUndoneAndRefusedLoudly() {
+        // The design trap, and the reason the check is here rather than at creation: the server's answer
+        // depends on who is riding what, so before the mount there is nothing to ask about. Asked about
+        // the carrier as well as the root, because with a carrier in between the root's answer is about
+        // the carrier and not about the player.
+        final VehicleImpl vehicle = started();
+        this.host.carrierClientSteered(true);
 
         final IllegalStateException thrown = assertThrows(IllegalStateException.class,
                 () -> vehicle.mount(StubPlayer.named("alepando")));
 
         assertAll(
                 () -> assertTrue(thrown.getMessage().contains("controlling passenger")),
+                () -> assertTrue(thrown.getMessage().contains("driver")),
                 () -> assertTrue(vehicle.getRider().isEmpty()),
-                () -> assertEquals(List.of("mount", "dismount"), this.host.journal(),
-                        "the rider has to be put back the way they were before the refusal")
+                () -> assertEquals(1, this.host.onlyCarrier().releases(),
+                        "the carrier has to go back rather than stay in the world unridden")
         );
     }
 
     @Test
     void aMountThePlatformRefusesIsAReturnValueRatherThanAnException() {
         // The platform guards a mount across a region boundary. That is a race a caller cannot avoid, so
-        // it must not look like a mistake it made.
+        // it must not look like a mistake it made — and the carrier spawned for it must not survive it.
         final VehicleImpl vehicle = started();
-        this.host.refuseMount(true);
+        this.host.carrierRefusesMount(true);
+
+        assertAll(
+                () -> assertFalse(vehicle.mount(StubPlayer.named("alepando"))),
+                () -> assertTrue(vehicle.getRider().isEmpty()),
+                () -> assertEquals(1, this.host.onlyCarrier().releases())
+        );
+    }
+
+    @Test
+    void aSeatWithNoCarrierIsAReturnValueRatherThanAnException() {
+        // What an unrecognised carrier entity type in vehicle.yml looks like from here, and what a host
+        // with no carrier support at all looks like.
+        final VehicleImpl vehicle = started();
+        this.host.refuseCarrier(true);
 
         assertAll(
                 () -> assertFalse(vehicle.mount(StubPlayer.named("alepando"))),
@@ -260,31 +399,39 @@ class VehicleImplTest {
     }
 
     @Test
-    void aRiderWhoLeftWithoutAskingIsNoticedOnTheNextStep() {
+    void aRiderWhoLeftWithoutAskingIsNoticedOnTheNextStepAndTheirCarrierGoes() {
         // Re-checked every step rather than tracked through events, so a rider who held sneak,
-        // disconnected, died or was removed is noticed with nothing having had to be delivered.
+        // disconnected, died or was removed is noticed with nothing having had to be delivered. The
+        // carrier goes with them: one exists per occupied seat and that seat is no longer occupied.
         final VehicleImpl vehicle = started();
         vehicle.mount(StubPlayer.named("alepando"));
-        this.host.seat(null);
+        this.host.onlyCarrier().seat(null);
 
         this.clock.advanceTicks(1.0D);
         this.host.runOnce();
 
-        assertTrue(vehicle.getRider().isEmpty());
+        assertAll(
+                () -> assertTrue(vehicle.getRider().isEmpty()),
+                () -> assertEquals(List.of(), vehicle.getRiders()),
+                () -> assertEquals(1, this.host.onlyCarrier().releases())
+        );
     }
 
     @Test
-    void somebodyElseAppearingInTheSeatIsNotDrivenFor() {
+    void somebodyElseAppearingOnACarrierIsNotDrivenFor() {
         // A passenger who never went through mount() never had the authority check run against them, so
-        // this layer declines to drive for them rather than treating the seat as the source of truth.
+        // this layer gives the seat up rather than treating the carrier as the source of truth.
         final VehicleImpl vehicle = started();
         vehicle.mount(StubPlayer.named("alepando"));
-        this.host.seat(StubPlayer.named("intruder"));
+        this.host.onlyCarrier().seat(StubPlayer.named("intruder"));
 
         this.clock.advanceTicks(1.0D);
         this.host.runOnce();
 
-        assertTrue(vehicle.getRider().isEmpty());
+        assertAll(
+                () -> assertTrue(vehicle.getRider().isEmpty()),
+                () -> assertEquals(1, this.host.onlyCarrier().releases())
+        );
     }
 
     // ------------------------------------------------------------------ stepping
@@ -302,7 +449,7 @@ class VehicleImplTest {
 
         assertAll(
                 () -> assertEquals(0F, vehicle.getState().forwardSpeedBlocksPerTick()),
-                () -> assertEquals(List.of(), this.host.journal())
+                () -> assertEquals(List.of(), this.host.rootJournal())
         );
     }
 
@@ -324,7 +471,7 @@ class VehicleImplTest {
 
         assertAll(
                 () -> assertEquals(List.of("setYaw:10.0", "moveLocal", "setYaw:20.0", "moveLocal"),
-                        this.host.journal()),
+                        this.host.rootJournal()),
                 () -> assertEquals(20F, vehicle.getState().yawDegrees(), EPSILON)
         );
     }
@@ -461,7 +608,10 @@ class VehicleImplTest {
     // ------------------------------------------------------------------ teardown
 
     @Test
-    void despawningCancelsTheLoopThenPutsTheRiderDownThenReleasesTheVisual() {
+    void despawningCancelsTheLoopThenReleasesTheCarriersThenTheVisual() {
+        // The carriers go first and from whatever thread this is, because a leaked carrier is an
+        // invisible entity holding a player that nothing will ever remove — so it must not be behind
+        // either of the two steps that can fail.
         final VehicleImpl vehicle = started();
         vehicle.mount(StubPlayer.named("alepando"));
         this.host.clearJournal();
@@ -471,9 +621,11 @@ class VehicleImplTest {
         assertAll(
                 () -> assertFalse(vehicle.isAlive()),
                 () -> assertFalse(this.host.isTaskAlive()),
-                () -> assertEquals(List.of("dismount", "visual.despawn"), this.host.journal(),
+                () -> assertEquals(List.of("carrier0.release", "dismount", "visual.despawn"),
+                        this.host.journal(),
                         "stop deciding, then release what was being decided about"),
-                () -> assertEquals(1, this.stoppedCount.get())
+                () -> assertEquals(1, this.stoppedCount.get()),
+                () -> assertTrue(vehicle.getRiders().isEmpty())
         );
     }
 
@@ -505,12 +657,14 @@ class VehicleImplTest {
         vehicle.despawn();
 
         assertAll(
-                () -> assertEquals(List.of("submit"), this.host.journal()),
+                () -> assertEquals(List.of("carrier0.release", "submit"), this.host.journal(),
+                        "a carrier releases itself through its own scheduler, so it does not wait"),
                 () -> assertEquals(0, this.visual.despawnCount())
         );
 
         this.host.drainSubmitted();
-        assertEquals(List.of("submit", "dismount", "visual.despawn"), this.host.journal());
+        assertEquals(List.of("carrier0.release", "submit", "dismount", "visual.despawn"),
+                this.host.journal());
     }
 
     @Test
@@ -537,7 +691,9 @@ class VehicleImplTest {
 
         assertAll(
                 () -> assertFalse(vehicle.isAlive()),
-                () -> assertEquals(List.of("visual.despawn"), this.host.journal()),
+                () -> assertEquals(List.of("carrier0.release", "visual.despawn"), this.host.journal(),
+                        "the carriers are still released: each has its own entity scheduler, which is"
+                                + " the whole reason this path can clean them up at all"),
                 () -> assertEquals(1, this.stoppedCount.get())
         );
     }
@@ -617,5 +773,22 @@ class VehicleImplTest {
                 () -> assertFalse(vehicle.reload()),
                 () -> assertTrue(vehicle.isStopped())
         );
+    }
+
+    /** A chart sink that keeps the plain text of what it was told, per severity. */
+    private static final class RecordingChartSink implements SeatChartSink {
+
+        private final List<String> info = new ArrayList<>();
+        private final List<String> warn = new ArrayList<>();
+
+        @Override
+        public void info(@NotNull Component line) {
+            this.info.add(PlainTextComponentSerializer.plainText().serialize(line));
+        }
+
+        @Override
+        public void warn(@NotNull Component line) {
+            this.warn.add(PlainTextComponentSerializer.plainText().serialize(line));
+        }
     }
 }

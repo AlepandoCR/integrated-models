@@ -2,10 +2,14 @@ package pandastic.studio.models.internal.binding;
 
 import org.bukkit.entity.Entity;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import pandastic.studio.models.api.binding.BindingOptions;
 import pandastic.studio.models.api.binding.ModelBinder;
+import pandastic.studio.models.api.model.ModelManager;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.internal.render.ModelSkeleton;
+import pandastic.studio.models.internal.spi.ModelRenderBackends;
+import pandastic.studio.models.internal.sim.ClipSettingsSource;
 import pandastic.studio.models.internal.sim.SimulationLoop;
 import pandastic.studio.models.internal.sim.SimulationSettingsSource;
 
@@ -58,6 +62,14 @@ public final class ModelBinderImpl implements ModelBinder {
     private final @NotNull LocomotionStageSource locomotion;
 
     /**
+     * Where the clip thresholds come from, or {@code null} to leave every model's own clips alone.
+     *
+     * <p>Nullable for the reason {@link RiggedModelImpl}'s field is: there is no safe default set of
+     * thresholds to invent here, so absent means the feature is off rather than guessed.
+     */
+    private final @Nullable ClipSettingsSource clipSettings;
+
+    /**
      * Every model handed out and not yet torn down.
      *
      * <p>A concurrent set because models are bound from whichever thread owns their anchor and remove
@@ -67,12 +79,23 @@ public final class ModelBinderImpl implements ModelBinder {
     private final @NotNull Set<RiggedModelImpl> bound = ConcurrentHashMap.newKeySet();
 
     /**
+     * The published registry, which this binder is one of the three things that fill.
+     *
+     * <p>Not a second copy of {@link #bound}: that set is this layer's own shutdown list and holds the
+     * impl type it has to call {@code reload()} on, while the registry is every kind of model at the api
+     * type a consumer sees. Both are maintained by the same two statements — one on bind, one in the
+     * teardown callback — so neither can drift from the other.
+     */
+    private final @NotNull ModelManager registry;
+
+    /**
      * @param anchors            how an entity becomes something this layer may read
      * @param loop               the single off-tick task every bound model's simulation is stepped from
      * @param simulationSettings where the solver, the cadence and the teleport thresholds come from
      * @param bindingSettings    where the sampler's period comes from
      * @param validator          the offline check {@link #bind} runs; see {@link RigBindValidator}
      * @param locomotion         the walk cycle for a rig, or {@link LocomotionStageSource#NONE}
+     * @param registry           where every model this binder hands out is published
      */
     public ModelBinderImpl(
             @NotNull AnchorFactory anchors,
@@ -80,21 +103,53 @@ public final class ModelBinderImpl implements ModelBinder {
             @NotNull SimulationSettingsSource simulationSettings,
             @NotNull BindingSettingsSource bindingSettings,
             @NotNull RigBindValidator validator,
-            @NotNull LocomotionStageSource locomotion
+            @NotNull LocomotionStageSource locomotion,
+            @NotNull ModelManager registry
     ) {
+        this(anchors, loop, simulationSettings, bindingSettings, validator, locomotion, null,
+                registry);
+    }
+
+    /**
+     * @param anchors            how an entity becomes something this layer may read
+     * @param loop               the single off-tick task every bound model's simulation is stepped from
+     * @param simulationSettings where the solver, the cadence and the teleport thresholds come from
+     * @param bindingSettings    where the sampler's period comes from
+     * @param validator          the offline check {@link #bind} runs; see {@link RigBindValidator}
+     * @param locomotion         the walk cycle for a rig, or {@link LocomotionStageSource#NONE}
+     * @param clipSettings       where the clip thresholds and blend times come from, or {@code null} to
+     *                           leave every model's own clips alone
+     * @param registry           where every model this binder hands out is published
+     */
+    public ModelBinderImpl(
+            @NotNull AnchorFactory anchors,
+            @NotNull SimulationLoop loop,
+            @NotNull SimulationSettingsSource simulationSettings,
+            @NotNull BindingSettingsSource bindingSettings,
+            @NotNull RigBindValidator validator,
+            @NotNull LocomotionStageSource locomotion,
+            @Nullable ClipSettingsSource clipSettings,
+            @NotNull ModelManager registry
+    ) {
+        this.clipSettings = clipSettings;
         this.anchors = Objects.requireNonNull(anchors, "anchors");
         this.loop = Objects.requireNonNull(loop, "loop");
         this.simulationSettings = Objects.requireNonNull(simulationSettings, "simulationSettings");
         this.bindingSettings = Objects.requireNonNull(bindingSettings, "bindingSettings");
         this.validator = Objects.requireNonNull(validator, "validator");
         this.locomotion = Objects.requireNonNull(locomotion, "locomotion");
+        this.registry = Objects.requireNonNull(registry, "registry");
     }
 
     @Override
     public @NotNull RiggedModelImpl bind(@NotNull String modelId, @NotNull Entity entity) {
+        // Names the active renderer rather than a renderer: the engine no longer knows which backend
+        // is installed, so a message hardcoding one would start lying the first time a second backend
+        // ships. Same reasoning as ModelRenderBackend#requireDefinition, which this mirrors.
         final ModelSkeleton skeleton = ModelSkeleton.of(modelId).orElseThrow(
                 () -> new IllegalStateException(
-                        "Cannot bind model-only asset '" + modelId + "': BetterModel has not loaded it."));
+                        "Cannot bind model-only asset '" + modelId + "': the model library ("
+                                + ModelRenderBackends.require().rendererName() + ") has not loaded it."));
         if (skeleton.boneNames().isEmpty()) {
             throw new IllegalStateException(
                     "Cannot bind model-only asset '" + modelId + "': it declares no bones.");
@@ -154,9 +209,25 @@ public final class ModelBinderImpl implements ModelBinder {
 
         final RiggedModelImpl model = new RiggedModelImpl(
                 rig, anchor, this.loop, this.simulationSettings, this.bindingSettings, this.locomotion,
-                options, this.bound::remove);
+                this.clipSettings, options, this::unregister);
         this.bound.add(model);
+        // Published here rather than on spawn: a bound handle is a model this plugin is responsible for
+        // tearing down whether or not it ever reaches the world, and the registry's contract is
+        // "handed out and not yet despawned".
+        this.registry.addModel(model);
         return model;
+    }
+
+    /**
+     * Forgets {@code model}, from both this layer's shutdown list and the published registry.
+     *
+     * <p>Handed to every model as its {@code onStopped} callback, so it runs exactly once per model, on
+     * whichever thread noticed the model was finished — which is why both collections behind it are
+     * concurrent.
+     */
+    private void unregister(@NotNull RiggedModelImpl model) {
+        this.bound.remove(model);
+        this.registry.removeModel(model);
     }
 
     /** Every model currently bound, as a snapshot. */
@@ -191,6 +262,10 @@ public final class ModelBinderImpl implements ModelBinder {
             } catch (final RuntimeException | Error ignored) {
                 // Deliberately swallowed; see above.
             }
+            // Belt and braces, and only on this path: a teardown that threw before reaching its own
+            // onStopped callback would otherwise leave the registry naming a model that is gone, and
+            // this is the one caller that has no later chance to notice.
+            this.registry.removeModel(model);
             despawned++;
         }
         this.bound.clear();

@@ -3,7 +3,9 @@ package pandastic.studio.models.internal;
 import net.kyori.adventure.text.logger.slf4j.ComponentLogger;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Mob;
+import org.bukkit.Server;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.PluginManager;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import pandastic.studio.models.api.ai.AiActivity;
@@ -26,6 +28,7 @@ import pandastic.studio.models.internal.config.ConfigFile;
 import pandastic.studio.models.internal.config.ConfigService;
 import pandastic.studio.models.internal.config.ConfigSnapshot;
 import pandastic.studio.models.internal.decoration.DecorationAnchorFactory;
+import pandastic.studio.models.internal.input.InputRuntime;
 import pandastic.studio.models.internal.nms.NmsBridgeResolution;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
 import pandastic.studio.models.internal.sim.SimulationClock;
@@ -55,7 +58,7 @@ import java.util.UUID;
  * {@link ModelRuntime#ModelRuntime(ComponentLogger, ConfigService, Path, RenderSettingsSource,
  * pandastic.studio.models.internal.sim.SimulationScheduler, SimulationLogger, SimulationClock,
  * AnchorFactory, DecorationAnchorFactory, VehicleHostFactory, RigBindValidator, LocomotionStageSource,
- * AiRuntime)}. Every parameter of it is something only the platform can supply, and every one of them
+ * AiRuntime, pandastic.studio.models.internal.input.InputRuntime)}. Every parameter of it is something only the platform can supply, and every one of them
  * has a recording double here, which makes the whole graph — including both off-tick loops, all three
  * binders and the AI layer — assertable with no {@code Bukkit.getServer()} anywhere.
  *
@@ -108,6 +111,11 @@ final class RuntimeFixtures {
                 (message, failure) -> journal.record("ai-fault"),
                 brains::hostFor);
 
+        // The input layer, built the way production builds it. No NMS bridge, so it comes up with the
+        // movement half only - which is all these tests need, since none of them observes an input.
+        final InputRuntime inputs = InputRuntime.create(
+                plugin(), logger(), SimulationClock.SYSTEM, configs::input, null);
+
         final ModelRuntime runtime = new ModelRuntime(
                 logger(),
                 configs,
@@ -141,7 +149,8 @@ final class RuntimeFixtures {
                 // of rig() is in it, so a bind fails here only if the runtime wired the validator wrong.
                 RigBindValidator.over(modelBoneNames(), renderSettings),
                 LocomotionStageSource.NONE,
-                ai);
+                ai,
+                inputs);
 
         return new Harness(runtime, configs, scheduler, brains, anchors, worlds, hosts);
     }
@@ -211,17 +220,44 @@ final class RuntimeFixtures {
     // ---------------------------------------------------------------- platform stubs
 
     /**
-     * A plugin that answers nothing.
+     * A plugin that answers nothing, except the two questions registering a listener asks.
      *
-     * <p>The only thing that wants one here is {@link AiRuntime#create}, whose own documentation says
-     * the parameter is unused by the layer and required so that its two factories cannot diverge in
-     * what they demand. A proxy is therefore not a shortcut — there is nothing to implement.
+     * <p>{@link AiRuntime#create} wants one and never calls it, as its own documentation says. The
+     * input layer is different: {@code InputRuntime.start()} registers a Bukkit listener and sweeps the
+     * online players, and {@code ModelRuntimeTest} starts a real runtime — so {@code getServer()} has
+     * to answer something rather than {@code null}, or starting the runtime is an NPE in a test that is
+     * about shutdown ordering.
+     *
+     * <p>The server it answers with registers nothing and has nobody online, which is exactly the
+     * fiction these tests want: the input layer comes up, holds no handler, and has a {@code shutdown()}
+     * for the runtime's teardown order to call.
      */
     static @NotNull Plugin plugin() {
+        final Object pluginManager = Proxy.newProxyInstance(
+                RuntimeFixtures.class.getClassLoader(),
+                new Class<?>[]{PluginManager.class},
+                (proxy, method, arguments) -> switch (method.getName()) {
+                    case "equals" -> proxy == arguments[0];
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "toString" -> "FakePluginManager";
+                    default -> null;
+                });
+        final Object server = Proxy.newProxyInstance(
+                RuntimeFixtures.class.getClassLoader(),
+                new Class<?>[]{Server.class},
+                (proxy, method, arguments) -> switch (method.getName()) {
+                    case "getPluginManager" -> pluginManager;
+                    case "getOnlinePlayers" -> List.of();
+                    case "equals" -> proxy == arguments[0];
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "toString" -> "FakeServer";
+                    default -> null;
+                });
         return (Plugin) Proxy.newProxyInstance(
                 RuntimeFixtures.class.getClassLoader(),
                 new Class<?>[]{Plugin.class},
                 (proxy, method, arguments) -> switch (method.getName()) {
+                    case "getServer" -> server;
                     case "equals" -> proxy == arguments[0];
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "toString" -> "FakePlugin";

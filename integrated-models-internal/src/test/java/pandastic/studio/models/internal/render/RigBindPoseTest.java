@@ -210,7 +210,7 @@ class RigBindPoseTest {
         final Rig rig = RenderFixtures.rig("doll", "model").root("absent").build();
 
         final String message = assertThrows(IllegalStateException.class,
-                () -> RigBindPose.of(rig, doll(), 1F, new RenderSettings(1.0E-4F, 1))).getMessage();
+                () -> RigBindPose.of(rig, doll(), 1F, new RenderSettings(1.0E-4F, 1, AnimationOwnership.RENDERER))).getMessage();
 
         assertAll(
                 () -> assertTrue(message.contains("[body] (+1 more)"),
@@ -280,5 +280,135 @@ class RigBindPoseTest {
         assertAll(
                 () -> assertTrue(positionOf(bindPose, 1).equals(firstPosition, TOLERANCE)),
                 () -> assertTrue(rotationOf(bindPose, 1).equals(firstRotation, TOLERANCE)));
+    }
+
+    // =============================================================================================
+    // The animation overlay
+    // =============================================================================================
+
+    /** The doll with its hair declared animation-owned, which is the only way to get an overlay. */
+    private static Rig animatedDollRig() {
+        return RenderFixtures.rig("doll", "model")
+                .root("body")
+                .bone("hair", "body", null, true)
+                .build();
+    }
+
+    @Test
+    void anEmptyOverlayComposesExactlyAsTheSingleArgumentFormDoes() {
+        // The guarantee the whole animation-ownership feature rests on: a rig of a model with no clips
+        // in it — krampus, and every rig written before the flag existed — must be transformed bit for
+        // bit as it was before this overload existed.
+        final List<ModelBone> model = List.of(
+                bone("body", ModelBone.NO_PARENT, new Vector3f(1F, 2F, 3F),
+                        new Quaternionf().rotateZ(0.3F)),
+                bone("hair", 0, new Vector3f(1F, -2F, 3F), new Quaternionf().rotateY(0.5F)));
+        final Pose pose = new Pose(2);
+        pose.set(0, 0.11F, -0.22F, 0.33F);
+        pose.set(1, -0.44F, 0.55F, -0.66F);
+
+        final RigBindPose plain = RigBindPose.of(dollRig(), model, 1F, RenderFixtures.SETTINGS);
+        final RigBindPose overlaid = RigBindPose.of(dollRig(), model, 1F, RenderFixtures.SETTINGS);
+        plain.compose(pose);
+        overlaid.compose(pose, AnimatedRotations.NONE);
+
+        assertAll(
+                () -> assertEquals(positionOf(plain, 0), positionOf(overlaid, 0)),
+                () -> assertEquals(positionOf(plain, 1), positionOf(overlaid, 1)),
+                () -> assertEquals(rotationOf(plain, 0), rotationOf(overlaid, 0)),
+                () -> assertEquals(rotationOf(plain, 1), rotationOf(overlaid, 1)));
+    }
+
+    @Test
+    void anOverlayCarryingNoDeltaComposesExactlyAsTheSingleArgumentFormDoes() {
+        // Same guarantee one step further in: the rig *does* declare an animation-owned bone, so the
+        // overlay is sized and consulted — but no clip is running, so every answer is exact zero and the
+        // bone must still land where it always did. This is the "no clip running" case the brief asks
+        // for by name.
+        final Rig rig = animatedDollRig();
+        final Pose pose = new Pose(2);
+        pose.set(0, 0.11F, -0.22F, 0.33F);
+        pose.set(1, -0.44F, 0.55F, -0.66F);
+
+        final AnimatedRotations animated = AnimatedRotations.of(rig);
+        animated.clear();
+        // What a source writes for a bone whose clip is not playing. Including the signed zero the
+        // quaternion decomposition legitimately produces.
+        animated.set(1, 0F, -0F, 0F);
+
+        final RigBindPose plain = RigBindPose.of(rig, doll(), 1F, RenderFixtures.SETTINGS);
+        final RigBindPose overlaid = RigBindPose.of(rig, doll(), 1F, RenderFixtures.SETTINGS);
+        plain.compose(pose);
+        overlaid.compose(pose, animated);
+
+        assertAll(
+                () -> assertFalse(animated.hasDelta(1)),
+                () -> assertEquals(positionOf(plain, 1), positionOf(overlaid, 1)),
+                () -> assertEquals(rotationOf(plain, 1), rotationOf(overlaid, 1)));
+    }
+
+    @Test
+    void theAnimationIsAppliedBeforeThePoseInTheBonesOwnFrame() {
+        // The order is the point. absolute = rest · animation · pose, so the pose rotates the bone in
+        // the frame the clip left it in. Reversed, a clip that turns a bone and a pose that pitches it
+        // would swap their meanings — and the two pictures only coincide when one of them is zero.
+        final Rig rig = animatedDollRig();
+        final Pose pose = new Pose(2);
+        pose.set(1, QUARTER_TURN, 0F, 0F);
+
+        final AnimatedRotations animated = AnimatedRotations.of(rig);
+        animated.set(1, 0F, QUARTER_TURN, 0F);
+
+        final RigBindPose bindPose = RigBindPose.of(rig, doll(), 1F, RenderFixtures.SETTINGS);
+        bindPose.compose(pose, animated);
+
+        final Quaternionf expected = new Quaternionf()
+                .mul(PoseQuaternions.fromEuler(0F, QUARTER_TURN, 0F, new Quaternionf()))
+                .mul(PoseQuaternions.fromEuler(QUARTER_TURN, 0F, 0F, new Quaternionf()));
+
+        assertAll(
+                () -> assertTrue(rotationOf(bindPose, 1).equals(expected, TOLERANCE)),
+                // And not the other way round, which is a different rotation entirely.
+                () -> assertFalse(rotationOf(bindPose, 1).equals(
+                        new Quaternionf()
+                                .mul(PoseQuaternions.fromEuler(QUARTER_TURN, 0F, 0F, new Quaternionf()))
+                                .mul(PoseQuaternions.fromEuler(0F, QUARTER_TURN, 0F, new Quaternionf())),
+                        TOLERANCE)));
+    }
+
+    @Test
+    void anAnimatedParentCarriesItsRigChildren() {
+        // The renderer's own pass swings a child when its parent's clip turns the parent; ours has to do
+        // the same, or the model comes apart exactly where a clip is driving it.
+        // Only the root is owned here, so the child carries nothing of its own.
+        final Rig ownedRoot = RenderFixtures.rig("doll", "model")
+                .bone("body", null, null, true)
+                .bone("hair", "body", null)
+                .build();
+        final AnimatedRotations animated = AnimatedRotations.of(ownedRoot);
+        animated.set(0, 0F, 0F, QUARTER_TURN);
+
+        final RigBindPose bindPose = RigBindPose.of(ownedRoot, doll(), 1F, RenderFixtures.SETTINGS);
+        bindPose.compose(new Pose(2), animated);
+
+        // A roll of a quarter turn about Z swings the hair from four blocks below the body to four
+        // blocks to one side of it.
+        final Vector3f hair = positionOf(bindPose, 1);
+        assertAll(
+                () -> assertEquals(4F, Math.abs(hair.x), TOLERANCE),
+                () -> assertEquals(0F, hair.y, TOLERANCE),
+                () -> assertEquals(0F, hair.z, TOLERANCE));
+    }
+
+    @Test
+    void anOverlayRefusesABoneTheRigDidNotDeclareAnimationOwned() {
+        // Not lenient, because a source writing an unowned bone has resolved the wrong bone, and
+        // honouring it would overlay an animation onto a bone the rig promised nothing was animating.
+        final AnimatedRotations animated = AnimatedRotations.of(animatedDollRig());
+
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class, () -> animated.set(0, 1F, 0F, 0F)),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> AnimatedRotations.NONE.set(0, 1F, 0F, 0F)));
     }
 }

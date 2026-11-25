@@ -1,12 +1,16 @@
 package pandastic.studio.models.internal.decoration;
 
 import org.bukkit.Location;
+import org.bukkit.entity.Entity;
 import org.junit.jupiter.api.Test;
 import pandastic.studio.models.api.decoration.AmbientMotion;
+import pandastic.studio.models.api.decoration.Decoration;
 import pandastic.studio.models.api.rig.PhysicsKind;
 import pandastic.studio.models.api.rig.PhysicsProfile;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.internal.binding.RigBindValidator;
+import pandastic.studio.models.internal.model.ModelManagerImpl;
+import pandastic.studio.models.internal.render.AnimationOwnership;
 import pandastic.studio.models.internal.render.RenderSettings;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
 import pandastic.studio.models.internal.sim.SimulationLogger;
@@ -33,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DecorationBinderImplTest {
 
     private static final RenderSettingsSource RENDER =
-            RenderSettingsSource.fixed(new RenderSettings(1.0E-4F, 8));
+            RenderSettingsSource.fixed(new RenderSettings(1.0E-4F, 8, AnimationOwnership.RENDERER));
 
     private final DecorationFixtures.Journal journal = new DecorationFixtures.Journal();
     private final FakeDecorationAnchor anchor = new FakeDecorationAnchor(this.journal);
@@ -49,10 +53,13 @@ class DecorationBinderImplTest {
         return binder(RigBindValidator.over(DecorationFixtures.modelBoneNames(), RENDER));
     }
 
+    /** The published registry, which a bind has to fill and a teardown has to empty. */
+    private final ModelManagerImpl registry = new ModelManagerImpl();
+
     private DecorationBinderImpl binder(RigBindValidator validator) {
         return new DecorationBinderImpl(
                 world -> this.anchor, this.loop, this.drivers,
-                DecorationFixtures.simulationSource(), validator);
+                DecorationFixtures.simulationSource(), validator, this.registry);
     }
 
     // ------------------------------------------------------------------ validation
@@ -130,6 +137,28 @@ class DecorationBinderImplTest {
         // Membership is exactly "bound and not yet stopped", which is also why a handle is single use:
         // one that could spawn again would have left the set with no way back in.
         assertEquals(0, binder.size());
+    }
+
+    @Test
+    void aBoundDecorationIsPublishedInTheModelManagerUntilItStops() {
+        final DecorationBinderImpl binder = binder();
+        final DecorationImpl decoration = binder.bind(
+                DecorationFixtures.rig(), this.anchor, DecorationFixtures.PLACEMENT,
+                AmbientMotion.NONE);
+
+        assertAll(
+                () -> assertEquals(1, this.registry.size()),
+                () -> assertTrue(this.registry.getModels().contains(decoration)),
+                // Asked for by kind, which is the shape that replaced one method per kind.
+                () -> assertEquals(List.of(decoration),
+                        List.copyOf(this.registry.getModelsByType(Decoration.class))),
+                // A decoration is the kind with nothing underneath it, so no entity filter matches it.
+                () -> assertEquals(0,
+                        this.registry.getModelsByEntityType(Entity.class).size()));
+
+        decoration.despawn();
+
+        assertEquals(0, this.registry.size());
     }
 
     @Test

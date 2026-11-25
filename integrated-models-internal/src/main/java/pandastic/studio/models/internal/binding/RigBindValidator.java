@@ -19,14 +19,14 @@ import java.util.List;
  * produces one error message naming every broken bone; the second produces a model that appears in the
  * world and then does not move.
  *
- * <p>So the binder validates here, before it hands back a handle, and the live bind in
- * {@link pandastic.studio.models.internal.render.TrackerPoseSink} is the backstop rather than the
- * discovery. The two check different things — this one checks the model definition, that one checks a
- * live tracker's bones and their displays — and a rig that fails this one can never pass that one.
+ * <p>So the binder validates here, before it hands back a handle, and the live bind the rendering backend
+ * performs is the backstop rather than the discovery. The two check different things — this one checks the
+ * model definition, that one checks a live tracker's bones and their displays — and a rig that fails this
+ * one can never pass that one.
  *
  * <h2>A seam, because the renderer is not constructible in a test</h2>
- * {@link #renderer} is the production validator and reaches {@code BetterModel}'s static registry.
- * {@link #over} does exactly the same resolution against a bone list handed in, which makes the
+ * {@link #renderer} is the production validator and reaches the installed rendering backend's static
+ * registry. {@link #over} does exactly the same resolution against a bone list handed in, which makes the
  * all-of-them-at-once failure reporting testable, and is also the right validator for a caller that
  * already holds the model's bone names.
  */

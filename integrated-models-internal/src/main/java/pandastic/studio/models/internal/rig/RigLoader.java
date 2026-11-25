@@ -20,24 +20,56 @@ import java.util.Set;
  * Turns a YAML rig file into a validated {@link Rig}, or into an explanation of why it could not.
  *
  * <h2>The format</h2>
- * Three top-level keys, and a flat map of bones that each name their own parent:
+ * A handful of top-level keys, and a flat map of bones that each name their own parent:
  *
  * <pre>
  * name: windswept_banner     # optional, defaults to the file name
  * model: banner              # required: the model id the renderer knows
+ * kind: vehicle              # optional: creature (default), vehicle or decoration
+ * clips:                     # optional: the model's OWN animations, per locomotion state
+ *   idle: idle
+ *   walk: walk
  * bones:
  *   pole: {}                 # a root, with no physics: an anchor for bones that have some
  *   tail:
  *     parent: pole
+ *     animation-owned: false # optional: does a shipped clip already keyframe this bone?
  *     physics:
  *       kind: pendulum
  *       stiffness: 0.08
  *       limits:
  *         pitch: [-60, 60]
+ * seats:                     # optional, and only on a `kind: vehicle` rig
+ *   - locator: seat_driver   # a LOCATOR element of the model, never a bone
+ *     driver: true
  * </pre>
  *
  * {@link #EXAMPLE} is a complete, commented file covering every physics kind and every option; it is
  * the format's reference, and a test asserts that it loads without a single diagnostic.
+ *
+ * <h2>Three sections that are not about how a bone moves</h2>
+ * <ul>
+ *   <li>{@code kind} gates the rest of the format instead of tuning anything. A
+ *       {@link pandastic.studio.models.api.rig.RigKind#VEHICLE} is the only kind that may declare
+ *       seats, and an absent {@code kind} is a {@code creature} — so every file written before the key
+ *       existed means exactly what it did then. An unknown spelling is an <strong>error</strong>, like
+ *       an unknown {@code arm-swing-axis} and unlike almost everything else here: a kind guessed after
+ *       a typo loads a file that means something other than what it says.</li>
+ *   <li>{@code seats} says where riders sit on a vehicle, and <strong>every seat names a locator</strong>
+ *       — the empty, cube-less marker a rigger places in Blockbench — never a bone. There is no bone
+ *       fallback, by policy: a bone is geometry the renderer's own animation pass moves, so a rider
+ *       seated on one sits wherever the playing clip left it. A seat naming something this rig declares
+ *       as a bone is therefore reported, because that is the mistake the rule exists to catch. It is a
+ *       list rather than a mapping because riders are offered seats in file order, and a sequence's
+ *       order is the format's guarantee where a mapping's is the parser's.</li>
+ *   <li>{@code clips} and the per-bone {@code animation-owned} flag describe the model's <em>own</em>
+ *       animations. They exist because this plugin's pose writer is a second writer to the same
+ *       display: on a bone a shipped clip keyframes, the renderer sends {@code bind ∘ animation} and
+ *       this plugin sends {@code bind ∘ physics} inside one frame, and the display keeps whichever
+ *       arrived last. Nothing in the loader can see inside a {@code .bbmodel}, so the file is where
+ *       that overlap gets declared — and a bone that declares both physics and animation ownership is
+ *       warned about, naming the bone and the kind.</li>
+ * </ul>
  *
  * <p>The hierarchy is written <strong>once</strong>: a bone names its parent and nothing nests. That
  * costs a topological sort at load time — {@link Rig.Builder} insists a parent is declared before its
@@ -68,6 +100,15 @@ import java.util.Set;
  *   <li>A bone whose physics block is structurally broken — not a mapping, no {@code kind}, an unknown
  *       {@code kind} — loses its <strong>physics</strong>, not its existence. It stays in the rig as a
  *       pass-through so its children still hang off it and the rest of the chain still works.</li>
+ *   <li>A seat that cannot work loses the <strong>seat</strong>, not the rig: one with no
+ *       {@code locator}, one naming a bone, one repeating another's name. A second driver's seat is
+ *       demoted to a passenger's rather than dropped, because a vehicle taking input from one rider is
+ *       no reason to lose a place to sit; an out-of-range rider offset is clamped like any coefficient;
+ *       and seats past {@link pandastic.studio.models.api.rig.SeatBounds#maxSeats()} are dropped from
+ *       the end, since the end is the last riders would have been offered. A {@code seats} section on a
+ *       rig that is not a vehicle is dropped whole, with a warning naming {@code kind} — the likely
+ *       mistake is a forgotten {@code kind: vehicle}, and reading it as a vehicle anyway would make a
+ *       creature rideable on the strength of a key the file never wrote.</li>
  *   <li>Bones past {@link pandastic.studio.models.api.rig.RigBounds#maxBones()} are
  *       <strong>dropped</strong> from the deep end, with a warning naming how many were lost. The list
  *       is in topological order by then, so a dropped bone's descendants go with it and what is left is
@@ -122,6 +163,34 @@ public final class RigLoader {
             name: windswept_banner   # this rig's own id, for logs. Optional: defaults to the file name.
             model: banner            # the model id the renderer knows this model by. Required.
 
+            # What the rig is for: creature (the default), vehicle or decoration. It gates parts of the
+            # format rather than changing how anything moves - a vehicle is the only kind that may
+            # declare `seats` - so a file that omits it is a creature and means what it always meant.
+            # A kind nobody recognises is an error rather than a fallback: guessing one would load a
+            # file that means something other than what it says, and the shape of that mistake is a
+            # vehicle whose seats were all quietly thrown away.
+            #
+            # This example is declared a vehicle because one file has to exercise the whole format. A
+            # banner on a pole is really a `decoration`; pick the kind your model actually is.
+            kind: vehicle
+
+            # The model's OWN animations, bound to the three locomotion states the pipeline can tell
+            # apart. Optional, and every state is optional on its own: bind what the model ships.
+            #
+            # Why a rig names them at all: this plugin poses bones by writing the same display the
+            # renderer's animation pass writes. On a bone a clip keyframes, the renderer sends
+            # (bind o animation) and we send (bind o physics) inside the same frame, and the display
+            # keeps whichever packet arrived last - a bone that flickers between two poses. Naming the
+            # clips is what lets the layer that composes the two know which one is playing.
+            #
+            # Clip names are kept EXACTLY as the rigger typed them, unlike every other name in this
+            # file: they are looked up inside a .bbmodel this plugin does not own, and the models in
+            # this repository ship clips called `standUp` and `lookaround`. Capitals matter here.
+            clips:
+              idle: idle
+              walk: walk
+              # run: running         # omitted roles are simply not bound
+
             bones:
               # Every key under `bones` is a bone name in the model. Names are matched case-insensitively
               # on the bare name, because renderer bone ids carry tag prefixes that riggers add and
@@ -130,7 +199,15 @@ public final class RigLoader {
               # Declare the hierarchy ONCE, with `parent`. Order does not matter - the loader sorts
               # parents before their children itself. A bone with nothing to say still needs a value, so
               # write `{}`: a bare `pole:` is dropped by the YAML layer before the loader ever sees it.
-              pole: {}               # no `parent` -> a root. No `physics` -> a pass-through anchor.
+              pole:                  # no `parent` -> a root. No `physics` -> a pass-through anchor.
+                # Says that one of the model's own clips keyframes this bone. Optional, false when
+                # absent, and a statement about the asset rather than a switch - nothing here can look
+                # inside a .bbmodel to find out, so the file is where it gets declared.
+                #
+                # Marking a bone animation-owned AND giving it physics is legal and warns, naming the
+                # bone: the two write the same display and the last packet of the frame wins. Say both
+                # only when you know the clip and the physics move the bone on different axes.
+                animation-owned: true
 
               # Every coefficient below is clamped into a range this server configures, and a value
               # outside it loads with a warning naming the bone and the clamp rather than failing. The
@@ -191,6 +268,33 @@ public final class RigLoader {
                   mass: 1.0
                   wind: 1.0
                   limits: unbounded  # only sane for drag, which has nothing to diverge
+
+            # Where riders sit. Only a `kind: vehicle` rig may declare this: on any other kind the whole
+            # section is dropped with a warning naming `kind`, because the likely mistake is a forgotten
+            # `kind: vehicle` and the alternative - reading a creature as rideable - is worse.
+            #
+            # A seat names a LOCATOR: the empty, cube-less marker a rigger places in Blockbench. Never a
+            # bone, and deliberately with no fallback to one. A bone is geometry the model's own
+            # animations move, so a rider seated on a bone sits wherever the playing clip left them,
+            # while a locator carries no geometry and exists for exactly this. A seat naming something
+            # this rig declares as a bone is reported and dropped - that is the mistake this rule exists
+            # to catch, not a mode to fall back on. A model whose rigger has not added locators yet
+            # therefore declares no working seat, and that is the expected state rather than a fault.
+            #
+            # A list rather than a mapping, because riders are offered seats in the order written here
+            # and a YAML sequence is the only form whose order is the format's guarantee.
+            seats:
+              - locator: seat_driver  # matched like a bone name: lower-cased, tag prefixes stripped
+                driver: true          # at most one seat drives. A second is read as a passenger seat
+                                      # with a warning naming the first, because a vehicle takes its
+                                      # input from one rider.
+              - name: bench_left      # optional: defaults to the locator's name. This is what a plugin
+                                      # asks for a seat by, and it is matched case-insensitively.
+                locator: seat_bench_left
+                offset: [0.0, 0.1, 0.0]   # blocks from the locator, within the configured ceiling. The
+                                          # rigger put the locator where the rider belongs, so this is
+                                          # for the half-block a saddle sits above a pivot - a rider who
+                                          # needs more than a nudge has a locator in the wrong place.
             """;
 
     private RigLoader() {

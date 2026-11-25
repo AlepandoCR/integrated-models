@@ -8,6 +8,49 @@ plugins {
 // come from the root subprojects {} block.
 
 // ---------------------------------------------------------------------------
+// pandastic-core — compileOnly AND annotationProcessor, and NOTHING ELSE.
+//
+// This module carries exactly one @Configurable declaration,
+// pandastic.studio.models.api.vehicle.VehicleNotifications, whose generated implementation
+// (VehicleNotificationConfig) is part of the PUBLISHED surface: a downstream plugin fills it
+// from a file of its own, one per kind of vehicle it ships.
+//
+// The two scopes are chosen to keep the publication invariant this module rests on intact.
+// Neither compileOnly nor annotationProcessor is a published configuration, so:
+//
+//   * the generated POM still carries NO <dependencies> element at all, which is what makes
+//     from(components["java"]) correct here (see the publishing block below), and
+//   * a consumer inherits nothing from our coordinate - no compile scope, no runtime scope,
+//     nothing transitive. That is non-negotiable: a published api that dragged a runtime
+//     library behind it would put a second, possibly different pandastic-core on every
+//     consumer's classpath.
+//
+// The processor still runs, so the generated class is compiled into this module and travels
+// in the api jar. What a consumer needs in order to COMPILE against it is pandastic-core on
+// their own classpath, which is the stated assumption - this is the house configuration
+// library and a plugin using it is assumed to have it. If they do not, the failure is an
+// ordinary missing-class compile error in their build, on
+// pandastic.studio.core.service.api.config.*, and not a defect here. There is deliberately
+// no shading of it into this jar, no runtime dependency added to make it available, and no
+// reflective fallback for its absence. VehicleNotifications' own javadoc says all of this
+// where a consumer will actually read it.
+//
+// Verify, do not assume: `gradlew :integrated-models-api:generatePomFileForApiPublication`
+// then grep the POM for <dependencies>, and check the jar contains
+// pandastic/studio/models/api/vehicle/VehicleNotificationConfig.class.
+// ---------------------------------------------------------------------------
+dependencies {
+    compileOnly(libs.pandastic.core)
+    annotationProcessor(libs.pandastic.core)
+
+    // compileOnly does not reach the test classpath, and the api test suite instantiates the
+    // generated config to assert that this plugin's own default messages are the declaration's
+    // defaults. A test configuration is not published either.
+    testImplementation(libs.pandastic.core)
+    testImplementation(rootProject.libs.paper.api)
+}
+
+// ---------------------------------------------------------------------------
 // Publishing — GitHub Packages.
 //
 // Only this module is published. Consumers are other plugins that compile against the

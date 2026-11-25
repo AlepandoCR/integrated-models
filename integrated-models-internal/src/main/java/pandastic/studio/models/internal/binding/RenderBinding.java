@@ -6,12 +6,15 @@ import pandastic.studio.models.api.render.PoseSink;
 /**
  * The renderer half of a bound model: a live tracker and the sink that writes poses onto it.
  *
- * <p>A seam, because the type on the other side of it cannot be faked. BetterModel's {@code Tracker} is
- * a sealed class permitting only its own two subclasses, so there is no way to construct one without a
- * server — and therefore no way to exercise the binding's ordering, its idempotence or its teardown
- * against a real tracker in a unit test. Narrowing the renderer down to the three operations the binding
- * layer actually performs on it moves every decision to this side of the seam, where a test can drive
- * it, and leaves exactly one unfakeable adapter behind: {@link TrackerRenderBinding}.
+ * <p>A seam, because the type on the other side of it cannot be faked. A rendering library's live
+ * tracker is not constructible without a server — BetterModel's, for instance, is a sealed class
+ * permitting only its own two subclasses — so there is no way to exercise the binding's ordering, its
+ * idempotence or its teardown against a real one in a unit test. Narrowing the renderer down to the three
+ * operations the binding layer actually performs on it moves every decision to this side of the seam,
+ * where a test can drive it, and leaves one unfakeable adapter behind, in the backend module.
+ *
+ * <p>Obtained from {@link pandastic.studio.models.internal.spi.ModelRenderBackend#bindEntity}, which is
+ * also where the ownership rule for a bind that fails is written down.
  *
  * <h2>Detaching and closing are separate, and the order matters</h2>
  * {@link #detach()} stops this binding writing to the tracker. It touches no world state, cannot fail,
@@ -73,6 +76,31 @@ public interface RenderBinding {
     default void setBoneGlow(@NotNull String boneName, boolean glow) {}
     default @NotNull java.util.Set<String> animationNames() { return java.util.Collections.emptySet(); }
     default boolean playAnimation(@NotNull String animationName, boolean loop) { return false; }
+
+    /**
+     * {@link #playAnimation(String, boolean)} with the renderer's blend durations stated.
+     *
+     * <p>Exists because the clip-driving layer changes which of a model's own clips is playing whenever
+     * its owner changes locomotion state, and a clip that snaps in reads as the model teleporting into a
+     * new pose. The durations are configuration — see {@code gait.yml}'s {@code clipBlendInTicks} — so
+     * they have to reach the renderer rather than being whatever the two-argument form happens to use.
+     *
+     * <p>Defaults to the two-argument form, so a backend that cannot express a blend plays the clip
+     * anyway rather than refusing it. That is the same "as far as it goes" rule {@code ModelHandle}
+     * applies to animation metadata, and for the same reason: a clip that does not play at all because
+     * one unsupported field was set is the worse failure.
+     *
+     * @param blendInTicks  ticks to blend into the clip over; zero snaps
+     * @param blendOutTicks ticks to blend out of it over; zero snaps
+     */
+    default boolean playAnimation(
+            @NotNull String animationName,
+            boolean loop,
+            int blendInTicks,
+            int blendOutTicks
+    ) {
+        return playAnimation(animationName, loop);
+    }
     default boolean stopAnimation(@NotNull String animationName) { return false; }
     default boolean replaceAnimation(@NotNull String targetAnimation, @NotNull String newAnimation) { return false; }
     default boolean hide(@NotNull org.bukkit.entity.Player player) { return false; }

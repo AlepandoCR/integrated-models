@@ -157,34 +157,51 @@ public interface VehicleHost {
     void teleport(double x, double y, double z, float yawDegrees, @NotNull BooleanSink whenDone);
 
     /**
-     * Who is riding the root entity, if anybody.
-     *
-     * <p>Asked every step rather than tracked through events, so that a rider who dismounted by holding
-     * sneak, disconnected, died or was removed is noticed on the next step without anything having had to
-     * be delivered. Owning thread only.
-     *
-     * @return the rider, or {@code null}
-     */
-    @Nullable Player rider();
-
-    /**
-     * Seats {@code rider} on the root entity.
-     *
-     * <p>Owning thread only. The platform guards a mount across a region boundary and refuses it, which
-     * is a {@code false} rather than an exception because it is a race a caller cannot avoid.
-     *
-     * @return whether the rider is now aboard
-     */
-    boolean mount(@NotNull Player rider);
-
-    /**
      * Puts every passenger of the root entity back on the ground.
      *
      * <p>Owning thread only.
      *
+     * <p>There is deliberately no {@code mount} beside this one any more. A rider sits on a
+     * <strong>locator</strong> of the model, through a {@link SeatCarrier} — see {@link VehicleSeats} —
+     * so nothing in this layer ever makes a player a passenger of the root entity. What is left is the
+     * eject, which is kept for exactly one reason: a passenger somebody <em>else</em> put on the root
+     * must not be left aboard a vehicle that has stopped and reports itself empty.
+     *
      * @return whether there was anybody to remove
      */
     boolean dismount();
+
+    /**
+     * Spawns an invisible carrier for one seat, at an absolute position in the root's world.
+     *
+     * <p>A carrier is what a rider actually rides, because a seat is a locator and nobody can ride a
+     * point; see {@link SeatCarrier} for the whole argument and for why it is not a passenger of the root.
+     * One is spawned when a rider sits down and removed when the seat empties, so this is called once per
+     * mount rather than once per vehicle.
+     *
+     * <p>Owning thread only, and only for a position inside the chunks that region owns — which the
+     * caller gets for free by spawning at a seat of the model standing on the root entity.
+     *
+     * @param entityTypeName the platform's own name for the entity type to spawn, from configuration. A
+     *                       name rather than a resolved type because the configuration mapper is a pure
+     *                       validator that may not name a platform class; an unrecognised name answers
+     *                       {@code null} rather than throwing inside a control step
+     * @param yawDegrees     the heading to spawn it with, which is the vehicle's
+     * @return the carrier, or {@code null} if this host cannot spawn one — because the type name is not a
+     *         type, because the spawn was refused, or because this is a host with no carrier support at
+     *         all. The default is the last of those: a substitute host in a test that is not about seats
+     *         has nothing to spawn entities in, and a vehicle whose carrier cannot be created reports the
+     *         seat as unoccupiable rather than failing to bind
+     */
+    default @Nullable SeatCarrier spawnCarrier(
+            @NotNull String entityTypeName,
+            double x,
+            double y,
+            double z,
+            float yawDegrees
+    ) {
+        return null;
+    }
 
     /**
      * Whether the server would let {@code rider}'s client simulate this vehicle's movement.

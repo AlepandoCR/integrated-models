@@ -241,6 +241,38 @@ public final class ConfigService {
     }
 
     /**
+     * What the input layer reads when it judges one observation. Shaped to satisfy
+     * {@code InputSettingsSource}.
+     *
+     * <p>Written in full for the same shadow. Allocation-free, because the snapshot holds the
+     * assembled value — which matters more here than for the command's settings and for a different
+     * reason than for the culler's: an observation can be dispatched on a network thread, and a
+     * settings source that allocated per call would put that allocation inside a player's connection
+     * read loop.
+     */
+    public @NotNull pandastic.studio.models.internal.input.InputSettings input() {
+        return snapshot().input();
+    }
+
+    /**
+     * The thresholds a rig's own animation clips are chosen with. Shaped to satisfy
+     * {@code ClipSettingsSource}.
+     *
+     * <p>Allocation-free, because the snapshot holds the assembled value — which is what lets the clip
+     * decision be made on a region thread, once per anchor sample, without putting an object on that
+     * path. It is also what makes the value's identity stable for as long as the configuration behind it
+     * is; nothing compares it by identity today, but see {@code CLAUDE.md} on why a settings source that
+     * allocated per call would be a hazard waiting for its first consumer.
+     *
+     * <p>Note this one reads {@code gait.yml} rather than a file of its own: choosing between a model's
+     * own authored walk and the synthesised one is a locomotion question, and splitting it across two
+     * files would put the walk threshold and the walk amplitudes in different places.
+     */
+    public @NotNull pandastic.studio.models.internal.sim.ClipSettings clips() {
+        return snapshot().clips();
+    }
+
+    /**
      * Re-reads every file and publishes the result, or refuses it.
      *
      * <p>Safe from any thread. The disk work happens on the common
@@ -331,14 +363,15 @@ public final class ConfigService {
         final ViewConfig view = open(ConfigFile.VIEW, ViewConfig.class, failures);
         final BindingConfig binding = open(ConfigFile.BINDING, BindingConfig.class, failures);
         final CommandConfig command = open(ConfigFile.COMMAND, CommandConfig.class, failures);
+        final InputConfig input = open(ConfigFile.INPUT, InputConfig.class, failures);
 
         if (physics == null || gait == null || render == null || simulation == null
                 || diagnostics == null || ai == null || vehicle == null || menu == null
-                || view == null || binding == null || command == null) {
+                || view == null || binding == null || command == null || input == null) {
             return new ConfigMapper.Result(null, failures);
         }
         return ConfigMapper.map(physics, gait, render, simulation, diagnostics, ai, vehicle, menu,
-                view, binding, command);
+                view, binding, command, input);
     }
 
     /**

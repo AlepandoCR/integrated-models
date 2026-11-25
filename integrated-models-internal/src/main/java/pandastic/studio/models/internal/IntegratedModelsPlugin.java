@@ -12,6 +12,7 @@ import pandastic.studio.models.api.IntegratedModels;
 import pandastic.studio.models.api.ai.CreatureAi;
 import pandastic.studio.models.api.binding.ModelBinder;
 import pandastic.studio.models.api.decoration.DecorationBinder;
+import pandastic.studio.models.api.input.PlayerInputController;
 import pandastic.studio.models.api.model.ModelManager;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.vehicle.VehicleBinder;
@@ -19,7 +20,6 @@ import pandastic.studio.models.internal.command.MenuCommand;
 import pandastic.studio.models.internal.command.ReloadCommand;
 import pandastic.studio.models.internal.command.ReloadReport;
 import pandastic.studio.models.internal.config.ConfigReloadResult;
-import pandastic.studio.models.internal.model.ModelManagerImpl;
 import pandastic.studio.models.internal.menu.EntitySchedulerMenuPresenter;
 import pandastic.studio.models.internal.menu.LibraryModelCatalogue;
 import pandastic.studio.models.internal.menu.MenuService;
@@ -31,6 +31,8 @@ import pandastic.studio.models.internal.menu.PaperMenuSurface;
 import pandastic.studio.models.internal.sim.SimulationClock;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
 import pandastic.studio.models.internal.sim.SimulationLoop;
+import pandastic.studio.models.internal.spi.ModelRenderBackendResolution;
+import pandastic.studio.models.internal.spi.ModelRenderBackends;
 
 import java.util.Collection;
 import java.util.Objects;
@@ -52,6 +54,15 @@ import java.util.Optional;
  * once the server ticks, and plugins enable before the first tick. {@code onLoad} is left for work that
  * must precede world loading, and none of this does.
  *
+ * <h2>Why the rendering backend is checked before anything else</h2>
+ * The renderer-specific half of this plugin lives in its own Gradle module and is discovered with
+ * {@link java.util.ServiceLoader}; see {@link pandastic.studio.models.internal.spi.ModelRenderBackend}.
+ * A jar assembled without one, or with one whose rendering library is not installed on the server, links
+ * perfectly and then fails at whichever call site reaches a renderer first — a rig load, a bind, a menu —
+ * with a message that names none of the above. So the lookup is forced as the first statement of
+ * {@code onEnable} and a missing backend refuses the enable outright. There is no degraded mode worth
+ * offering: a model plugin that cannot render is not a reduced feature set.
+ *
  * <h2>Why shutdown is the first statement of onDisable</h2>
  * A plugin's classloader is closed <em>before</em> the platform cancels its tasks, and region- and
  * entity-scheduled repeating tasks are never canceled for a plugin at all. So a sampler, a control
@@ -64,18 +75,30 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
     private static @Nullable IntegratedModelsPlugin instance;
 
     private @Nullable PandasticCore pandasticCore;
-    private @Nullable ModelManager modelManager;
     private @Nullable ModelRuntime runtime;
     private @Nullable MenuService menu;
 
     @Override
     public void onLoad() {
         instance = this;
-        this.modelManager = new ModelManagerImpl(this);
     }
 
     @Override
     public void onEnable() {
+        // FIRST, and before anything that could reach a renderer. Every production factory in this
+        // project resolves the backend through ModelRenderBackends, which throws when there is none —
+        // from whichever call site happened to come first, with a message nobody would connect to a
+        // missing module. Forcing the lookup here turns that into one line naming what was not found,
+        // read once at startup, and refuses to enable rather than leaving a model plugin that cannot
+        // render anything looking like it started successfully.
+        final ModelRenderBackendResolution backend = ModelRenderBackends.resolution();
+        if (!backend.isPresent()) {
+            getComponentLogger().error(Component.text(backend.describe(), NamedTextColor.RED));
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+        getComponentLogger().info(Component.text(backend.describe()));
+
         this.pandasticCore = PandasticCore.instance(this);
         this.runtime = ModelRuntime.create(this);
         this.runtime.start();
@@ -113,9 +136,17 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
         getServer().getServicesManager().unregisterAll(this);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The runtime's, not this class's. It used to be built in {@link #onLoad()} and held here, which
+     * made it outlive the binders that fill it — a registry that survived a shutdown would still have
+     * been naming models that are gone. Its contents are the three binders' live handles, so it belongs
+     * to the object whose lifetime those share.
+     */
     @Override
     public @NotNull ModelManager getModelManager() {
-        return Objects.requireNonNull(this.modelManager, "Model manager is not initialized yet");
+        return runtime().modelManager();
     }
 
     public @NotNull PandasticCore getPandasticCore() {
@@ -140,6 +171,11 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
     @Override
     public @NotNull Optional<CreatureAi> getCreatureAi() {
         return runtime().creatureAi();
+    }
+
+    @Override
+    public @NotNull PlayerInputController getInputController() {
+        return runtime().inputController();
     }
 
     @Override

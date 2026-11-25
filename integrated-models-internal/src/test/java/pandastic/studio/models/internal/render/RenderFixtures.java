@@ -20,7 +20,14 @@ final class RenderFixtures {
     /** Short enough that a 200-bone model is summarised, long enough to name a handful. */
     static final int BONE_NAME_LIMIT = 32;
 
-    static final RenderSettings SETTINGS = new RenderSettings(EPSILON_RADIANS, BONE_NAME_LIMIT);
+    /**
+     * The shipped default, which is also the policy under which the whole render layer behaves as it did
+     * before animation-owned bones were a concept: nothing is composed and nothing is skipped on a rig
+     * that declares no owned bone, which is every rig in these fixtures.
+     */
+    static final AnimationOwnership OWNERSHIP = AnimationOwnership.RENDERER;
+
+    static final RenderSettings SETTINGS = new RenderSettings(EPSILON_RADIANS, BONE_NAME_LIMIT, OWNERSHIP);
 
     static final RigBounds RIG_BOUNDS = new RigBounds(256);
 

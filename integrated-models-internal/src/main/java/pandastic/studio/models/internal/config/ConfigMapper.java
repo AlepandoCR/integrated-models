@@ -5,6 +5,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import pandastic.studio.models.api.ai.AiActivity;
 import pandastic.studio.models.api.ai.AiBounds;
+import pandastic.studio.models.api.input.InputTuning;
 import pandastic.studio.models.api.locomotion.BindingBounds;
 import pandastic.studio.models.api.locomotion.GaitTuning;
 import pandastic.studio.models.api.math.IkTolerance;
@@ -15,9 +16,14 @@ import pandastic.studio.models.api.render.EmissionCadence;
 import pandastic.studio.models.api.rig.ProfileBounds;
 import pandastic.studio.models.api.rig.ProfileDefaults;
 import pandastic.studio.models.api.rig.RigBounds;
+import pandastic.studio.models.api.rig.SeatBounds;
 import pandastic.studio.models.api.vehicle.VehicleBounds;
 import pandastic.studio.models.internal.menu.ModelAppearance;
+import pandastic.studio.models.internal.render.AnimationOwnership;
 import pandastic.studio.models.internal.rig.RigDiagnostic;
+import pandastic.studio.models.internal.sim.ClipSelector;
+import pandastic.studio.models.internal.sim.ClipSettings;
+import pandastic.studio.models.internal.sim.ClipSettingsSource;
 
 // The menu value type's nested records, imported by their own simple names. The outer type cannot be
 // imported: pandastic.studio.models.internal.menu.MenuSettings and the MenuSettings declaration in this
@@ -30,12 +36,13 @@ import pandastic.studio.models.internal.menu.MenuSettings.Layout;
 import pandastic.studio.models.internal.menu.MenuSettings.Picker;
 import pandastic.studio.models.internal.menu.MenuSettings.Session;
 
-// The view, binding and command value types are in exactly the same position and cannot be imported
+// The view, binding, command and input value types are in exactly the same position and cannot be imported
 // either: pandastic.studio.models.internal.view.ViewSettings, pandastic.studio.models.internal.binding
-// .BindingSettings and pandastic.studio.models.internal.command.CommandSettings share their simple names
-// with the declarations of view.yml, binding.yml and command.yml in this package. None has nested
-// records to import, so each is written in full once, in viewSettings(...), bindingSettings(...) and
-// commandSettings(...) below.
+// .BindingSettings, pandastic.studio.models.internal.command.CommandSettings and
+// pandastic.studio.models.internal.input.InputSettings share their simple names with the declarations
+// of view.yml, binding.yml, command.yml and input.yml in this package. None has nested records to
+// import, so each is written in full once, in viewSettings(...), bindingSettings(...),
+// commandSettings(...) and inputSettings(...) below.
 
 import java.util.List;
 import java.util.Locale;
@@ -87,6 +94,25 @@ public final class ConfigMapper {
 
     /** Ceiling on the blend and clamp durations, in seconds. */
     private static final float MAX_DURATION_SECONDS = 10F;
+
+    /**
+     * Ceiling on an input gesture window, in milliseconds.
+     *
+     * <p>An input-sanity ceiling. Ten seconds is already an order of magnitude past any gesture a
+     * player performs deliberately, so what this catches is a figure typed in nanoseconds or a decimal
+     * point in the wrong place. Nothing reads it to decide how a gesture is judged.
+     */
+    private static final int MAX_INPUT_WINDOW_MILLIS = 10_000;
+
+    /**
+     * Ceiling on how many input bindings the controller may be configured to hold.
+     *
+     * <p>An input-sanity ceiling, and a generous one: every live binding is evaluated against every
+     * publication for every player it is scoped to, so a server that genuinely wants ten thousand of
+     * them has a design problem this number is not going to fix. What it catches is a key set to a
+     * figure that was meant to be a different key.
+     */
+    private static final int MAX_INPUT_BINDINGS = 10_000;
 
     /**
      * Ceiling on an interpolation window, in client ticks.
@@ -223,6 +249,42 @@ public final class ConfigMapper {
      * operator's to choose; the ceiling is not.
      */
     private static final float MAX_LOCAL_STEP_BLOCKS = 16F;
+
+    /**
+     * Ceiling on the seats one rig may declare.
+     *
+     * <p>An input-sanity figure. Sixty-four riders on one model is a bus nobody modelled, and what this
+     * catches is a digit rather than a choice — the figure that constrains a real server is the
+     * operator's own {@code maxSeats}, far below it.
+     */
+    private static final int MAX_SEATS = 64;
+
+    /**
+     * Ceiling on a rider's offset from their seat's locator, in blocks.
+     *
+     * <p>An input-sanity figure, and a generous one: a seat <em>is</em> its locator, so an offset is a
+     * trim and sixteen blocks of trim is a rider sitting next to the model rather than on it. The
+     * operator's own {@code maxSeatOffsetBlocks} is what expresses that judgement; this only catches a
+     * misplaced decimal point.
+     */
+    private static final float MAX_SEAT_OFFSET_BLOCKS = 16F;
+
+    /**
+     * Ceiling on the vertical trim applied to a seat carrier, in blocks.
+     *
+     * <p>An input-sanity figure, symmetric because a trim's sign is a direction. It compensates for the
+     * carrier entity type's own passenger height, and no entity in the game sits its rider four blocks
+     * from its feet — so what this catches is a seat offset written into the server's key by mistake.
+     */
+    private static final float MAX_SEAT_CARRIER_OFFSET_BLOCKS = 4F;
+
+    /**
+     * Ceiling on the gap between two columns of the seat chart, in spaces.
+     *
+     * <p>An input-sanity figure. Sixteen spaces already pushes a column past the width of most consoles,
+     * and nothing reads this to decide anything about a seat.
+     */
+    private static final int MAX_SEAT_CHART_COLUMN_GAP = 16;
 
     /**
      * Ceiling on a menu session's idle timeout, in seconds.
@@ -501,10 +563,13 @@ public final class ConfigMapper {
     }
 
     /**
-     * Validates every loaded configuration and builds the snapshot they describe.
+     * Validates the loaded configurations and builds the snapshot they describe, taking the declared
+     * defaults for {@code input.yml}.
      *
-     * <p>The snapshot comes back at revision {@link ConfigSnapshot#UNPUBLISHED}; stamping it is
-     * {@link ConfigService}'s job, because only the service knows which publication this is.
+     * <p>Kept as an overload for the same reason the shorter forms are: a caller which has nothing to
+     * say about how input is judged should not have to construct a configuration for it. Like the menu
+     * and command defaults these are a complete working set, so a test that ignores them is judging
+     * combinations against real windows rather than against zeroes.
      *
      * @param physics     the loaded {@code physics.yml}
      * @param gait        the loaded {@code gait.yml}
@@ -533,12 +598,52 @@ public final class ConfigMapper {
             @NotNull BindingSettings binding,
             @NotNull CommandSettings command
     ) {
+        return map(physics, gait, render, simulation, diagnostics, ai, vehicle, menu, view, binding,
+                command, new InputConfig());
+    }
+
+    /**
+     * Validates every loaded configuration and builds the snapshot they describe.
+     *
+     * <p>The snapshot comes back at revision {@link ConfigSnapshot#UNPUBLISHED}; stamping it is
+     * {@link ConfigService}'s job, because only the service knows which publication this is.
+     *
+     * @param physics     the loaded {@code physics.yml}
+     * @param gait        the loaded {@code gait.yml}
+     * @param render      the loaded {@code render.yml}
+     * @param simulation  the loaded {@code simulation.yml}
+     * @param diagnostics the loaded {@code diagnostics.yml}
+     * @param ai          the loaded {@code ai.yml}
+     * @param vehicle     the loaded {@code vehicle.yml}
+     * @param menu        the loaded {@code menu.yml}
+     * @param view        the loaded {@code view.yml}
+     * @param binding     the loaded {@code binding.yml}
+     * @param command     the loaded {@code command.yml}
+     * @param input       the loaded {@code input.yml}
+     * @return the snapshot, or the diagnostics explaining why there is none
+     */
+    @Contract(value = "_, _, _, _, _, _, _, _, _, _, _, _ -> new", pure = true)
+    public static @NotNull Result map(
+            @NotNull PhysicsSettings physics,
+            @NotNull GaitSettings gait,
+            @NotNull RenderSettings render,
+            @NotNull SimulationSettings simulation,
+            @NotNull DiagnosticsSettings diagnostics,
+            @NotNull AiSettings ai,
+            @NotNull VehicleSettings vehicle,
+            @NotNull MenuSettings menu,
+            @NotNull ViewSettings view,
+            @NotNull BindingSettings binding,
+            @NotNull CommandSettings command,
+            @NotNull InputSettings input
+    ) {
         final ConfigChecks checks = new ConfigChecks();
 
         checkPhysics(physics, checks);
         checkGait(gait, checks);
         checkRender(render, checks);
         checkSimulation(simulation, checks);
+        final AnimationOwnership ownership = checkOwnership(render, checks);
         final RigDiagnostic.Severity severity = checkSeverity(diagnostics, checks);
         checkAi(ai, checks);
         checkVehicle(vehicle, checks);
@@ -546,9 +651,10 @@ public final class ConfigMapper {
         checkView(view, checks);
         checkBinding(binding, checks);
         checkCommand(command, checks);
+        checkInput(input, checks);
         checkAcrossFiles(physics, render, simulation, vehicle, checks);
 
-        if (!checks.isEmpty() || severity == null) {
+        if (!checks.isEmpty() || severity == null || ownership == null) {
             return new Result(null, checks.toList());
         }
 
@@ -558,12 +664,13 @@ public final class ConfigMapper {
                 profileBounds(physics),
                 profileDefaults(physics),
                 rigBounds(physics),
+                seatBounds(vehicle),
                 gaitTuning(gait),
                 bindingBounds(gait),
                 cadenceBounds(render),
                 driverBounds(simulation),
                 ikTolerance(simulation),
-                renderOptions(render),
+                renderOptions(render, ownership),
                 simulationOptions(simulation),
                 new ConfigSnapshot.DiagnosticsOptions(diagnostics.logRigDiagnostics(), severity,
                         diagnostics.logConfigReloadSummary()),
@@ -577,7 +684,9 @@ public final class ConfigMapper {
                 menuSettings(menu),
                 viewSettings(view),
                 bindingSettings(binding),
-                commandSettings(command)
+                commandSettings(command),
+                clipSettings(gait),
+                inputSettings(input)
         );
         return new Result(snapshot, List.of());
     }
@@ -898,6 +1007,66 @@ public final class ConfigMapper {
         }
         checks.inRange(file, "defaultHeadStabilise", gait.defaultHeadStabilise(), 0F, 1F);
         checks.inRange(file, "defaultHandStabilise", gait.defaultHandStabilise(), 0F, 1F);
+
+        checkClips(gait, checks);
+    }
+
+    /**
+     * Checks the clip-driving thresholds.
+     *
+     * <p>One cross-field rule and three input-sanity ceilings. The rule is that the walk threshold has
+     * to sit strictly below the run threshold, and it is refused rather than clamped because the two
+     * being equal leaves no speed at all at which the walk clip plays — a model that only ever stands or
+     * sprints, with nothing in the log to explain it.
+     *
+     * <p>The hysteresis band is <strong>not</strong> cross-checked against the gap between the two
+     * thresholds, deliberately. A margin wider than the gap makes the run state harder to reach and the
+     * walk state stickier, which is a legitimate thing to want on a server whose owners accelerate
+     * sharply; it is never incoherent, only conservative. {@link ClipSelector} resolves it in a fixed
+     * order, so the outcome is defined for any margin.
+     *
+     * @param gait   the loaded configuration
+     * @param checks the accumulator receiving the complaints
+     */
+    private static void checkClips(@NotNull GaitSettings gait, @NotNull ConfigChecks checks) {
+        final ConfigFile file = ConfigFile.GAIT;
+
+        // Zero is legal for the walk threshold and means "any movement at all plays the walk", which is
+        // a reasonable thing to want from a model whose idle and walk differ only slightly. The run
+        // threshold is exclusive-above-zero only because the rule below already forces it past the walk
+        // one, and a run threshold of zero would leave nothing below it.
+        final float walk = checks.inRange(
+                file, "clipWalkSpeedBlocksPerTick", gait.clipWalkSpeedBlocksPerTick(), 0F, 1_000F);
+        final float run = checks.above(
+                file, "clipRunSpeedBlocksPerTick", gait.clipRunSpeedBlocksPerTick(), 0F, 1_000F);
+        checks.below(file, "clipWalkSpeedBlocksPerTick", walk,
+                file, "clipRunSpeedBlocksPerTick", run);
+
+        checks.inRange(file, "clipSpeedHysteresisBlocksPerTick",
+                gait.clipSpeedHysteresisBlocksPerTick(), 0F, 1_000F);
+        checks.inRange(file, "clipMinimumHoldSeconds",
+                gait.clipMinimumHoldSeconds(), 0F, MAX_DURATION_SECONDS);
+        checks.inRange(file, "clipBlendInTicks", gait.clipBlendInTicks(), 0, MAX_WINDOW_TICKS);
+        checks.inRange(file, "clipBlendOutTicks", gait.clipBlendOutTicks(), 0, MAX_WINDOW_TICKS);
+    }
+
+    /**
+     * The clip-driving settings {@code gait.yml} describes.
+     *
+     * <p>Carried whole by the snapshot, like {@code view.yml}'s and {@code binding.yml}'s, so that
+     * {@code ConfigService::clips} satisfies {@link ClipSettingsSource} directly and with a stable
+     * identity. Built once per reload rather than per read, which is the half of that guarantee this
+     * method is responsible for.
+     */
+    private static @NotNull ClipSettings clipSettings(@NotNull GaitSettings gait) {
+        return new ClipSettings(
+                gait.clipDrivingEnabled(),
+                gait.clipWalkSpeedBlocksPerTick(),
+                gait.clipRunSpeedBlocksPerTick(),
+                gait.clipSpeedHysteresisBlocksPerTick(),
+                gait.clipMinimumHoldSeconds(),
+                gait.clipBlendInTicks(),
+                gait.clipBlendOutTicks());
     }
 
     /**
@@ -1126,6 +1295,15 @@ public final class ConfigMapper {
                 vehicle.maxLocalStepBlocks(), 0F, MAX_LOCAL_STEP_BLOCKS);
         checks.above(file, "restSpeedBlocksPerTick", vehicle.restSpeedBlocksPerTick(), 0F, 1F);
 
+        // One rather than zero: a ceiling of zero would not limit a vehicle rig, it would make every
+        // vehicle rig on the server unrideable. Zero offset, by contrast, is legal and means "the
+        // locator, exactly", which is where a well-placed locator already is.
+        checks.inRange(file, "maxSeats", vehicle.maxSeats(), 1, MAX_SEATS);
+        checks.inRange(file, "maxSeatOffsetBlocks", vehicle.maxSeatOffsetBlocks(),
+                0F, MAX_SEAT_OFFSET_BLOCKS);
+
+        checkSeats(vehicle, checks);
+
         checks.atMost(file, "controlPeriodTicks", controlPeriod, file, "maxStepTicks", maxStepTicks);
 
         if (!Float.isNaN(maxSpeed) && !Float.isNaN(maxBoost) && !Float.isNaN(maxLocalStep)
@@ -1135,6 +1313,58 @@ public final class ConfigMapper {
                     + maxLocalStep + ": a vehicle at full speed would pay a scheduled teleport every"
                     + " tick. Lower the boost, lower the speed, or raise maxLocalStepBlocks.");
         }
+    }
+
+    /**
+     * Checks the seating half of {@code vehicle.yml}.
+     *
+     * <p>Separate from {@link #checkVehicle} because it is a different subject with its own relationship:
+     * the follow deadband has to stay <em>below</em> the carrier's step ceiling, or every displacement is
+     * either ignored or teleported and a carrier is never moved in place at all — which looks like seats
+     * that do not follow and costs a scheduled teleport per rider per tick when they do.
+     *
+     * <p>The carrier's entity type is checked only for being present. Whether it names a real type, and
+     * whether that type is one the server would let a rider's client steer, is answered where an entity
+     * can be named — this class is a pure validator and must not reach the platform. An unrecognised or
+     * refused type leaves every seat unoccupiable and reported, which is a loud failure rather than a
+     * silent one.
+     *
+     * <p>Every label may be blank. A blank line is how an operator removes it, which is the convention
+     * every other template in this project follows; only a key with no value at all is refused, because
+     * that is a file that means something the author did not write.
+     *
+     * @param vehicle the loaded configuration
+     * @param checks  the accumulator receiving the complaints
+     */
+    private static void checkSeats(@NotNull VehicleSettings vehicle, @NotNull ConfigChecks checks) {
+        final ConfigFile file = ConfigFile.VEHICLE;
+
+        checks.text(file, "seatCarrierEntityType", vehicle.seatCarrierEntityType());
+        checks.inRange(file, "seatCarrierOffsetYBlocks", vehicle.seatCarrierOffsetYBlocks(),
+                -MAX_SEAT_CARRIER_OFFSET_BLOCKS, MAX_SEAT_CARRIER_OFFSET_BLOCKS);
+        final float carrierStep = checks.above(file, "seatMaxCarrierStepBlocks",
+                vehicle.seatMaxCarrierStepBlocks(), 0F, MAX_LOCAL_STEP_BLOCKS);
+        final float deadband = checks.inRange(file, "seatFollowDeadbandBlocks",
+                vehicle.seatFollowDeadbandBlocks(), 0F, MAX_LOCAL_STEP_BLOCKS);
+        checks.below(file, "seatFollowDeadbandBlocks", deadband,
+                file, "seatMaxCarrierStepBlocks", carrierStep);
+
+        checks.inRange(file, "seatChartColumnGap", vehicle.seatChartColumnGap(),
+                0, MAX_SEAT_CHART_COLUMN_GAP);
+        checks.optionalText(file, "seatChartTop", vehicle.seatChartTop());
+        checks.optionalText(file, "seatChartTitle", vehicle.seatChartTitle());
+        checks.optionalText(file, "seatChartRowPrefix", vehicle.seatChartRowPrefix());
+        checks.optionalText(file, "seatChartSeatCell", vehicle.seatChartSeatCell());
+        checks.optionalText(file, "seatChartLocatorLabel", vehicle.seatChartLocatorLabel());
+        checks.optionalText(file, "seatChartBoneLabel", vehicle.seatChartBoneLabel());
+        checks.optionalText(file, "seatChartUnresolvedLabel", vehicle.seatChartUnresolvedLabel());
+        checks.optionalText(file, "seatChartDriverLabel", vehicle.seatChartDriverLabel());
+        checks.optionalText(file, "seatChartPassengerLabel", vehicle.seatChartPassengerLabel());
+        checks.optionalText(file, "seatChartOffsetCell", vehicle.seatChartOffsetCell());
+        checks.optionalText(file, "seatChartOnLocatorLabel", vehicle.seatChartOnLocatorLabel());
+        checks.optionalText(file, "seatChartSummary", vehicle.seatChartSummary());
+        checks.optionalText(file, "seatChartUnusableNote", vehicle.seatChartUnusableNote());
+        checks.optionalText(file, "seatChartBottom", vehicle.seatChartBottom());
     }
 
     /**
@@ -1671,6 +1901,43 @@ public final class ConfigMapper {
     }
 
     /**
+     * Checks {@code input.yml}.
+     *
+     * <p>Every bound here is an input-sanity ceiling rather than a derived limit: nothing in the input
+     * layer reads them to decide how a gesture is judged, they only catch a misplaced decimal point.
+     * The one genuine floor is that none of the four windows may be zero — a zero double-tap window can
+     * never match and a zero repeat interval dispatches on every publication, so zero is a different
+     * behaviour rather than a weaker setting, and the value type refuses it too.
+     *
+     * <p>No key here is a statement about another file. The input layer's windows are compared against
+     * a monotonic clock rather than against the simulation's rate or the emission cadence, so there is
+     * nothing cross-file to enforce — which is worth saying, because every other timing value in this
+     * project has such a relationship.
+     *
+     * @param input  the loaded configuration
+     * @param checks the accumulator receiving the complaints
+     */
+    private static void checkInput(@NotNull InputSettings input, @NotNull ConfigChecks checks) {
+        final ConfigFile file = ConfigFile.INPUT;
+
+        checks.inRange(file, "doubleTapWindowMillis", input.doubleTapWindowMillis(),
+                1, MAX_INPUT_WINDOW_MILLIS);
+        checks.inRange(file, "holdThresholdMillis", input.holdThresholdMillis(),
+                1, MAX_INPUT_WINDOW_MILLIS);
+        checks.inRange(file, "repeatIntervalMillis", input.repeatIntervalMillis(),
+                1, MAX_INPUT_WINDOW_MILLIS);
+        checks.inRange(file, "staleAfterMillis", input.staleAfterMillis(),
+                1, MAX_INPUT_WINDOW_MILLIS);
+        checks.inRange(file, "actionPulseVisibilityMillis", input.actionPulseVisibilityMillis(),
+                1, MAX_INPUT_WINDOW_MILLIS);
+
+        checks.inRange(file, "maxBindings", input.maxBindings(), 1, MAX_INPUT_BINDINGS);
+        checks.inRange(file, "faultLogIntervalSeconds", input.faultLogIntervalSeconds(), 0F,
+                MAX_DURATION_SECONDS);
+        checks.inRange(file, "faultsBeforeDisable", input.faultsBeforeDisable(), 1, 1_000);
+    }
+
+    /**
      * Checks the invariants that span two files.
      *
      * @param physics    the loaded {@code physics.yml}
@@ -1861,6 +2128,21 @@ public final class ConfigMapper {
     }
 
     /**
+     * Builds the bounds a rig file's {@code seats} section is validated against.
+     *
+     * <p>From {@code vehicle.yml} rather than {@code physics.yml}, unlike every other bound a rig is
+     * read against: what these describe is a vehicle's passenger budget, and an operator looking for it
+     * looks in the vehicle file. The rig loader is simply where it is enforced, because a seat is
+     * declared in a rig file.
+     *
+     * @param vehicle the validated configuration
+     * @return the seat bounds
+     */
+    private static @NotNull SeatBounds seatBounds(@NotNull VehicleSettings vehicle) {
+        return new SeatBounds(vehicle.maxSeats(), vehicle.maxSeatOffsetBlocks());
+    }
+
+    /**
      * Builds the walk cycle's calibration.
      *
      * <p>A builder rather than a constructor because thirty positional {@code float}s in a row is a
@@ -1963,12 +2245,46 @@ public final class ConfigMapper {
      * @param render the validated configuration
      * @return the render options
      */
-    private static @NotNull ConfigSnapshot.RenderOptions renderOptions(@NotNull RenderSettings render) {
+    private static @NotNull ConfigSnapshot.RenderOptions renderOptions(
+            @NotNull RenderSettings render,
+            @NotNull AnimationOwnership ownership
+    ) {
         return new ConfigSnapshot.RenderOptions(
                 render.emissionHz(),
                 render.jitterTolerance(),
                 render.boneDirtyEpsilonRadians(),
-                render.boneNamesInMessage());
+                render.boneNamesInMessage(),
+                ownership);
+    }
+
+    /**
+     * Resolves the animation-owned bone policy by name.
+     *
+     * <p>Refused rather than defaulted when the name is not a policy, for the reason
+     * {@link #checkSeverity} is: an operator who wrote {@code render} meant {@code renderer}, and
+     * quietly substituting the shipped default would leave them believing a policy is in force that is
+     * not — with the symptom being a model that still flickers after they changed the key.
+     *
+     * @param render the loaded configuration
+     * @param checks the accumulator receiving the complaints
+     * @return the resolved policy, or {@code null} when the name does not name one
+     */
+    private static @Nullable AnimationOwnership checkOwnership(
+            @NotNull RenderSettings render,
+            @NotNull ConfigChecks checks
+    ) {
+        // Nullable despite the declaration's @NotNull, for the reason spelled out in checkSeverity: the
+        // generated class reads the key through getString, which answers null for a key that is present
+        // with an empty value, and "animationOwnedBonePolicy:" alone on a line is a real edit.
+        final AnimationOwnership resolved = AnimationOwnership.parse(render.animationOwnedBonePolicy());
+        if (resolved != null) {
+            return resolved;
+        }
+        final String declared = render.animationOwnedBonePolicy();
+        checks.reject(ConfigFile.RENDER, "animationOwnedBonePolicy",
+                "must be one of " + AnimationOwnership.keys() + " but is "
+                        + (declared == null ? "empty" : "'" + declared + "'"));
+        return null;
     }
 
     /**
@@ -2076,7 +2392,48 @@ public final class ConfigMapper {
                 vehicle.controlPeriodTicks(),
                 vehicle.maxStepTicks(),
                 vehicle.maxLocalStepBlocks(),
-                vehicle.restSpeedBlocksPerTick());
+                vehicle.restSpeedBlocksPerTick(),
+                seatSettings(vehicle));
+    }
+
+    /**
+     * Everything the seating layer reads, as one value.
+     *
+     * <p>Assembled here rather than in the vehicle layer's settings source so that the snapshot stores
+     * the object whole — which is what makes the vehicle source able to hand it through without building
+     * anything, and therefore what keeps its identity stable across two reads with the configuration
+     * unchanged. The chart's templates stay MiniMessage source for the reason
+     * {@link #menuSettings} gives: every one of them carries a placeholder whose value only exists when a
+     * chart is built.
+     *
+     * @param vehicle the validated configuration
+     * @return the seat settings
+     */
+    private static @NotNull pandastic.studio.models.internal.vehicle.SeatSettings seatSettings(
+            @NotNull VehicleSettings vehicle
+    ) {
+        return new pandastic.studio.models.internal.vehicle.SeatSettings(
+                vehicle.seatCarrierEntityType(),
+                vehicle.seatCarrierOffsetYBlocks(),
+                vehicle.seatMaxCarrierStepBlocks(),
+                vehicle.seatFollowDeadbandBlocks(),
+                vehicle.logSeatChart(),
+                new pandastic.studio.models.internal.vehicle.SeatSettings.Chart(
+                        vehicle.seatChartTop(),
+                        vehicle.seatChartTitle(),
+                        vehicle.seatChartRowPrefix(),
+                        vehicle.seatChartSeatCell(),
+                        vehicle.seatChartLocatorLabel(),
+                        vehicle.seatChartBoneLabel(),
+                        vehicle.seatChartUnresolvedLabel(),
+                        vehicle.seatChartDriverLabel(),
+                        vehicle.seatChartPassengerLabel(),
+                        vehicle.seatChartOffsetCell(),
+                        vehicle.seatChartOnLocatorLabel(),
+                        vehicle.seatChartSummary(),
+                        vehicle.seatChartUnusableNote(),
+                        vehicle.seatChartBottom(),
+                        vehicle.seatChartColumnGap()));
     }
 
     /**
@@ -2259,6 +2616,37 @@ public final class ConfigMapper {
      * @param command the validated configuration
      * @return the command settings
      */
+    /**
+     * What the input layer reads when it judges one observation, as one value.
+     *
+     * <p>Carried whole by the snapshot, like the view, binding, command and clip settings, so
+     * {@code ConfigService::input} satisfies {@code InputSettingsSource} directly and with a stable
+     * identity — which is what lets one dispatch read it once without putting an allocation on a path
+     * that runs on a network thread.
+     *
+     * <p>The millisecond-to-nanosecond conversion happens here rather than in the file, because an
+     * operator thinks in milliseconds and a monotonic clock does not.
+     *
+     * @param input the validated configuration
+     * @return the input settings
+     */
+    private static @NotNull pandastic.studio.models.internal.input.InputSettings inputSettings(
+            @NotNull InputSettings input
+    ) {
+        return new pandastic.studio.models.internal.input.InputSettings(
+                InputTuning.ofMillis(
+                        input.doubleTapWindowMillis(),
+                        input.holdThresholdMillis(),
+                        input.repeatIntervalMillis(),
+                        input.staleAfterMillis()),
+                input.packetSourceEnabled(),
+                input.actionCaptureEnabled(),
+                input.actionPulseVisibilityMillis() * InputTuning.NANOS_PER_MILLISECOND,
+                input.maxBindings(),
+                (long) ((double) input.faultLogIntervalSeconds() * 1_000_000_000.0D),
+                input.faultsBeforeDisable());
+    }
+
     private static @NotNull pandastic.studio.models.internal.command.CommandSettings commandSettings(
             @NotNull CommandSettings command
     ) {

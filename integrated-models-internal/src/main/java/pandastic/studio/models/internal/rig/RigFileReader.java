@@ -4,17 +4,23 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import pandastic.studio.models.api.rig.AxisLimits;
+import pandastic.studio.models.api.rig.ClipRole;
 import pandastic.studio.models.api.rig.PhysicsKind;
 import pandastic.studio.models.api.rig.PhysicsProfile;
 import pandastic.studio.models.api.rig.ProfileBounds;
 import pandastic.studio.models.api.rig.Rig;
+import pandastic.studio.models.api.rig.RigClips;
+import pandastic.studio.models.api.rig.RigKind;
+import pandastic.studio.models.api.rig.RigSeat;
 import pandastic.studio.models.api.locomotion.ArmSwingAxis;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -37,13 +43,23 @@ final class RigFileReader {
     // still works. That is why the sets below read as one word: `collisionradius` is the canonical
     // form of the key the author writes as `collision-radius`. The *_HELP strings carry the
     // author-facing spelling, because a warning that lists canonical forms helps nobody.
-    private static final Set<String> TOP_LEVEL_KEYS =
-            Set.of("name", "model", "bones", "armswingaxis", "handswingaxis");
+    private static final Set<String> TOP_LEVEL_KEYS = Set.of(
+            "name", "model", "kind", "bones", "armswingaxis", "handswingaxis", "seats", "clips");
     private static final String TOP_LEVEL_HELP =
-            "name, model, bones, arm-swing-axis, hand-swing-axis";
+            "name, model, kind, bones, arm-swing-axis, hand-swing-axis, seats, clips";
 
-    private static final Set<String> BONE_KEYS = Set.of("parent", "physics");
-    private static final String BONE_HELP = "parent, physics";
+    private static final Set<String> BONE_KEYS = Set.of("parent", "physics", "animationowned");
+    private static final String BONE_HELP = "parent, physics, animation-owned";
+
+    private static final Set<String> SEAT_KEYS = Set.of("name", "locator", "driver", "offset");
+    private static final String SEAT_HELP = "name, locator, driver, offset";
+
+    /**
+     * The keys the {@code clips} block accepts, which are exactly the locomotion states the pipeline
+     * can tell itself apart from — derived from the enum rather than written out, so a role added there
+     * cannot be one this reader silently calls unknown.
+     */
+    private static final Set<String> CLIP_KEYS = clipKeys();
 
     private static final Set<String> PHYSICS_KEYS = Set.of(
             "kind", "stiffness", "damping", "lag", "gravity", "mass", "wind",
@@ -117,10 +133,276 @@ final class RigFileReader {
 
         final ArmSwingAxis armSwingAxis = readArmSwingAxis(top);
         final ArmSwingAxis handSwingAxis = readHandSwingAxis(top);
+        final RigKind kind = readRigKind(top);
+        final RigClips clips = readClips(top);
+        // Read against every bone the file declared, not against the ones that survived the ceiling: a
+        // seat naming a bone is the rigger pointing at the wrong kind of element, and that is just as
+        // true of a bone the ceiling dropped.
+        final List<RigSeat> seats = readSeats(top, kind, boneKeys(declared));
         if (hasErrors()) {
             return RigLoadResult.failure(this.diagnostics);
         }
-        return build(name, modelId, enforceBoneCeiling(ordered), armSwingAxis, handSwingAxis);
+        return build(name, modelId, kind, enforceBoneCeiling(ordered), armSwingAxis, handSwingAxis,
+                seats, clips);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Kind
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * What the rig is for, defaulting to {@link RigKind#CREATURE}.
+     *
+     * <p>Hard on an unknown spelling, like {@code arm-swing-axis} and unlike almost everything else in
+     * this reader. The kind <em>gates</em> parts of the format rather than tuning anything, so falling
+     * back after a typo would load a file that means something other than what it says — and the shape
+     * of that mistake is a vehicle whose seats were all quietly discarded, which looks like a seating
+     * bug rather than a spelling one.
+     */
+    private @NotNull RigKind readRigKind(@NotNull Block top) {
+        final String value = text(top, "kind");
+        if (value == null) {
+            return RigKind.CREATURE;
+        }
+        try {
+            return RigKind.parse(value);
+        } catch (final IllegalArgumentException refused) {
+            error(null, refused.getMessage() + ". A rig that omits 'kind' is a "
+                    + RigKind.CREATURE.key() + ", which is the kind that gates nothing.");
+            return RigKind.CREATURE;
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Clips
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Which of the model's own animations plays in each locomotion state.
+     *
+     * <p>The clip names are kept exactly as the rigger typed them. Every other name in this format is
+     * lower-cased, and this one must not be: it is handed to the renderer to look up a clip in a model
+     * file this plugin does not own, and the clips in this repository's own models include
+     * {@code standUp} and {@code lookaround}. Lower-casing would turn a correct rig into one that names
+     * a clip the model does not have.
+     */
+    private @NotNull RigClips readClips(@NotNull Block top) {
+        final Object raw = top.get("clips");
+        if (raw == null) {
+            return RigClips.NONE;
+        }
+        if (!(raw instanceof ConfigurationSection section)) {
+            warn(null, "has a 'clips' key that is not a mapping of locomotion state to clip name (got "
+                    + describe(raw) + "); no clip is bound. Known states: " + ClipRole.names() + ".");
+            return RigClips.NONE;
+        }
+
+        final Block states = block(section, CLIP_KEYS, ClipRole.names(), null, "the 'clips' block");
+        final Map<ClipRole, String> clips = new EnumMap<>(ClipRole.class);
+        for (final ClipRole role : ClipRole.values()) {
+            final Object value = states.get(role.key());
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof ConfigurationSection || value instanceof List<?>
+                    || value instanceof Map<?, ?>) {
+                warn(null, "has a '" + states.spelled(role.key()) + "' clip that is not a name (got "
+                        + describe(value) + "); that state is left unbound.");
+                continue;
+            }
+            // Trimmed and otherwise untouched: case is the rigger's, not ours.
+            final String clip = value.toString().trim();
+            if (clip.isEmpty()) {
+                warn(null, "has a blank '" + states.spelled(role.key()) + "' clip, which names no"
+                        + " animation; that state is left unbound. Remove the key instead.");
+                continue;
+            }
+            clips.put(role, clip);
+        }
+        // Cannot throw: every blank was filtered above, which is the only thing RigClips refuses.
+        return RigClips.of(clips);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Seats
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Where riders sit, in file order.
+     *
+     * <p>A YAML <em>list</em> rather than a mapping, which is the one place this format departs from
+     * "everything is a mapping". Riders are offered seats in the order the file declares them, so the
+     * order is part of what the file says — and a sequence's order is guaranteed by the format while a
+     * mapping's is a property of whichever parser read it. The list also makes a duplicate seat name
+     * expressible, which is what lets it be reported rather than silently collapsed.
+     *
+     * @param kind     the kind the file declared. Only a vehicle may seat anybody
+     * @param boneKeys every bone this file declared, so that a seat pointing at one can be reported as
+     *                 the mistake it is
+     */
+    private @NotNull List<RigSeat> readSeats(
+            @NotNull Block top,
+            @NotNull RigKind kind,
+            @NotNull Set<String> boneKeys
+    ) {
+        final Object raw = top.get("seats");
+        if (raw == null) {
+            return List.of();
+        }
+        if (!kind.permitsSeats()) {
+            // Soft, and the seats go rather than the rig: the likely author error is a forgotten
+            // `kind: vehicle`, and refusing the file would take the model away as well as the seats.
+            // Reading it as a vehicle instead would be worse - the kind is the one thing the file does
+            // state, and a creature silently promoted to a vehicle is a creature players can ride.
+            warn(null, "declares 'seats' but is a " + kind.key() + " rig, so the seats are ignored."
+                    + " Only a " + RigKind.VEHICLE.key() + " rig seats riders - add `kind: "
+                    + RigKind.VEHICLE.key() + "` if that is what this model is.");
+            return List.of();
+        }
+        if (!(raw instanceof List<?> entries)) {
+            warn(null, "has a 'seats' key that is not a list of seats (got " + describe(raw) + ");"
+                    + " no seat is declared. Write each seat as a list entry, `- locator: <locator>`:"
+                    + " riders are offered seats in file order, so the order is part of what the file"
+                    + " says and a list is the only form that guarantees it.");
+            return List.of();
+        }
+
+        final List<RigSeat> seats = new ArrayList<>();
+        final int ceiling = this.settings.seatBounds().maxSeats();
+        for (final Object entry : entries) {
+            final RigSeat seat = readSeat(entry, boneKeys, seats);
+            if (seat == null) {
+                continue;
+            }
+            if (seats.size() >= ceiling) {
+                warn(null, "declares the seat '" + seat.name() + "' past the " + ceiling
+                        + "-seat ceiling this server configures; it and any seat after it are dropped."
+                        + " The seats that load are the first " + ceiling + ", because riders are"
+                        + " offered them in file order.");
+                break;
+            }
+            seats.add(seat);
+        }
+        return seats;
+    }
+
+    /** One seat, or {@code null} if it could not be read as one. */
+    private @Nullable RigSeat readSeat(
+            @Nullable Object entry,
+            @NotNull Set<String> boneKeys,
+            @NotNull List<RigSeat> accepted
+    ) {
+        // A mapping nested inside a YAML list arrives as a plain Map rather than as a
+        // ConfigurationSection: the configuration layer only wraps mappings it can address by path.
+        if (!(entry instanceof Map<?, ?> fields)) {
+            warn(null, "has a 'seats' entry that is not a mapping of seat options (got "
+                    + describe(entry) + "); it is ignored. A seat is written `- locator: <locator>`.");
+            return null;
+        }
+
+        final Block seat = block(fields, SEAT_KEYS, SEAT_HELP, null, "a 'seats' entry");
+        final String locator = text(seat, "locator");
+        if (locator == null) {
+            warn(null, "has a seat with no 'locator', so there is nowhere for the rider to sit; it is"
+                    + " ignored. A seat names a locator element of the model - the empty marker a"
+                    + " rigger places in Blockbench - and nothing else.");
+            return null;
+        }
+
+        final String spelledName = text(seat, "name");
+        // The locator's name is the obvious default and needs no second spelling in the file. It is
+        // normalised the same way, so a tagged locator and the seat named after it agree.
+        final String name = spelledName == null ? locator : spelledName;
+
+        final String locatorKey = Rig.normalise(locator.trim());
+        if (boneKeys.contains(locatorKey)) {
+            // The mistake the seat format exists to catch. A bone is geometry with a pivot that the
+            // renderer's animation pass writes every frame a clip plays, so a rider seated on one sits
+            // wherever the current clip left it; a locator carries no geometry and is never animated.
+            // There is deliberately no fallback to a bone - that is what would make this silent.
+            warn(null, "has a seat ('" + name + "') naming '" + locator + "', which this rig declares"
+                    + " as a bone rather than as a locator; the seat is dropped. A seat is a locator"
+                    + " element - an empty marker with no cubes - never a bone: a bone is geometry the"
+                    + " model's own animations move, so a rider on one would sit wherever the playing"
+                    + " clip happens to leave it. Add a locator in Blockbench and name that.");
+            return null;
+        }
+
+        final boolean wantsDriver = flag(seat, "driver", null, "seat '" + name + "'");
+        boolean driver = wantsDriver;
+        if (wantsDriver) {
+            for (final RigSeat existing : accepted) {
+                if (existing.driver()) {
+                    // Soft, and the seat survives as a passenger's: a vehicle takes input from one
+                    // rider, and dropping the seat would lose a place to sit over a question of who
+                    // steers.
+                    warn(null, "declares the seat '" + name + "' as a second driver's seat; '"
+                            + existing.name() + "' already is one, so '" + name + "' is read as a"
+                            + " passenger seat. A vehicle takes its input from one rider.");
+                    driver = false;
+                    break;
+                }
+            }
+        }
+
+        final float[] offset = readSeatOffset(seat, name);
+        final RigSeat parsed;
+        try {
+            parsed = new RigSeat(name, locator, driver, offset[0], offset[1], offset[2]);
+        } catch (final IllegalArgumentException refused) {
+            // Backstop: the blank cases are handled above and the offsets are clamped finite, so
+            // reaching this means the reader and RigSeat disagree about what is legal.
+            warn(null, "has a seat the api refused (" + refused.getMessage() + "); it is dropped."
+                    + " This is a loader defect, not a file one.");
+            return null;
+        }
+
+        for (final RigSeat existing : accepted) {
+            if (existing.name().equals(parsed.name())) {
+                warn(null, "declares the seat '" + parsed.name() + "' twice; the second is dropped."
+                        + " Seat names are matched case-insensitively, so a consumer asking for one"
+                        + " would always get the first. Give each seat its own 'name'.");
+                return null;
+            }
+        }
+        return parsed;
+    }
+
+    /** A seat's rider offset in blocks, clamped into the configured range, defaulting to the locator. */
+    private float[] readSeatOffset(@NotNull Block seat, @NotNull String seatName) {
+        final float[] offset = new float[3];
+        final Object raw = seat.get("offset");
+        if (raw == null) {
+            return offset;
+        }
+        if (!(raw instanceof List<?> list) || list.size() != 3) {
+            warn(null, "has a seat ('" + seatName + "') whose 'offset' is not a three-element"
+                    + " [x, y, z] list of blocks (got " + describe(raw) + "); the rider sits on the"
+                    + " locator itself.");
+            return offset;
+        }
+
+        final float limit = this.settings.seatBounds().maxSeatOffsetBlocks();
+        for (int axis = 0; axis < offset.length; axis++) {
+            final Float value = asFloat(list.get(axis));
+            if (value == null || !Float.isFinite(value)) {
+                warn(null, "has a seat ('" + seatName + "') whose 'offset' holds something that is not"
+                        + " a finite number of blocks (" + describe(list.get(axis)) + "); the rider sits"
+                        + " on the locator itself.");
+                return new float[3];
+            }
+            if (value < -limit || value > limit) {
+                final float clamped = Math.clamp(value.floatValue(), -limit, limit);
+                warn(null, "has a seat ('" + seatName + "') offset " + value + " blocks on axis "
+                        + axis + ", outside the permitted +/-" + limit + "; clamped to " + clamped
+                        + ". An offset trims a locator - a rider who needs more than this has a locator"
+                        + " in the wrong place, and that is fixed in Blockbench.");
+                offset[axis] = clamped;
+                continue;
+            }
+            offset[axis] = value;
+        }
+        return offset;
     }
 
     // ------------------------------------------------------------------------------------------
@@ -166,11 +448,26 @@ final class RigFileReader {
             warn(spelling, "is not a mapping of options (got " + describe(value) + "), so it stays"
                     + " in the rig as a pass-through anchor with no parent and no physics."
                     + " Write `" + spelling + ": {}` for a bone that needs no options.");
-            return new ParsedBone(key, spelling, null, null);
+            return new ParsedBone(key, spelling, null, null, false);
         }
 
         final Block bone = block(section, BONE_KEYS, BONE_HELP, spelling, "bone '" + spelling + "'");
-        return new ParsedBone(key, spelling, text(bone, "parent"), readPhysics(bone, spelling));
+        final PhysicsProfile physics = readPhysics(bone, spelling);
+        final boolean animationOwned =
+                flag(bone, "animationowned", spelling, "bone '" + spelling + "'");
+        if (animationOwned && physics != null) {
+            // Worth a warning precisely because it is legal. Both layers write the same display: the
+            // renderer sends bind o animation for whatever clip is playing, this plugin sends
+            // bind o physics, and the display keeps whichever packet arrived last in the frame. The
+            // author sees a bone flicking between two poses and has no reason to suspect the rig file.
+            warn(spelling, "carries " + physics.kind().name().toLowerCase(Locale.ROOT) + " physics and"
+                    + " is marked animation-owned. Both write the same bone: the model's own clip sends"
+                    + " one pose and this plugin's physics sends another, in the same frame, and the"
+                    + " last one there wins - which reads as a bone that flickers. Either drop the"
+                    + " physics on this bone or take 'animation-owned' off it, unless you know the clip"
+                    + " and the physics move it on different axes.");
+        }
+        return new ParsedBone(key, spelling, text(bone, "parent"), physics, animationOwned);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -638,17 +935,26 @@ final class RigFileReader {
     private @NotNull RigLoadResult build(
             @NotNull String name,
             @NotNull String modelId,
+            @NotNull RigKind kind,
             @NotNull List<ParsedBone> ordered,
             @NotNull ArmSwingAxis armSwingAxis,
-            @NotNull ArmSwingAxis handSwingAxis
+            @NotNull ArmSwingAxis handSwingAxis,
+            @NotNull List<RigSeat> seats,
+            @NotNull RigClips clips
     ) {
         try {
             final Rig.Builder builder = Rig.builder(
                     name, modelId, this.settings.rigBounds(), this.settings.profileBounds());
+            builder.kind(kind);
             builder.armSwingAxis(armSwingAxis);
             builder.handSwingAxis(handSwingAxis);
+            builder.clips(clips);
+            builder.seatBounds(this.settings.seatBounds());
             for (final ParsedBone bone : ordered) {
-                builder.bone(bone.key(), bone.parentKey(), bone.physics());
+                builder.bone(bone.key(), bone.parentKey(), bone.physics(), bone.animationOwned());
+            }
+            for (final RigSeat seat : seats) {
+                builder.seat(seat);
             }
 
             return RigLoadResult.success(builder.build(), this.diagnostics);
@@ -708,10 +1014,48 @@ final class RigFileReader {
             @Nullable String boneName,
             @NotNull String what
     ) {
+        return blockOf(section.getValues(false), known, help, boneName, what);
+    }
+
+    /**
+     * The same, for a mapping that is not a {@link ConfigurationSection}.
+     *
+     * <p>Which is what every mapping nested inside a YAML list is: the configuration layer wraps only
+     * the mappings it can address by path, so a {@code seats:} entry arrives as a plain {@link Map}.
+     * Keys are rendered through {@link String#valueOf} because YAML permits a number or a boolean as a
+     * key, and an unknown-key warning quoting {@code 3} is more use than a class cast.
+     */
+    private @NotNull Block block(
+            @NotNull Map<?, ?> section,
+            @NotNull Set<String> known,
+            @NotNull String help,
+            @Nullable String boneName,
+            @NotNull String what
+    ) {
+        final Map<String, Object> raw = LinkedHashMap.newLinkedHashMap(section.size());
+        for (final Map.Entry<?, ?> entry : section.entrySet()) {
+            raw.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        return blockOf(raw, known, help, boneName, what);
+    }
+
+    /**
+     * The shared body of both overloads: canonicalise, report what nothing reads, keep the rest.
+     *
+     * <p>Named differently rather than overloaded a third time, because {@code Map<?, ?>} and
+     * {@code Map<String, Object>} erase to the same signature.
+     */
+    private @NotNull Block blockOf(
+            @NotNull Map<String, Object> section,
+            @NotNull Set<String> known,
+            @NotNull String help,
+            @Nullable String boneName,
+            @NotNull String what
+    ) {
         final Map<String, Object> values = new LinkedHashMap<>();
         final Map<String, String> spelling = new LinkedHashMap<>();
 
-        for (final Map.Entry<String, Object> entry : section.getValues(false).entrySet()) {
+        for (final Map.Entry<String, Object> entry : section.entrySet()) {
             final String key = canonical(entry.getKey());
             if (!known.contains(key)) {
                 // A typo'd key is the quietest failure in a config format: the author's value is
@@ -737,6 +1081,40 @@ final class RigFileReader {
         }
         final String text = raw.toString().trim();
         return text.isEmpty() ? null : text;
+    }
+
+    /**
+     * A boolean option, defaulting to {@code false} when absent and when unreadable.
+     *
+     * <p>Both flags this format has — a bone's {@code animation-owned} and a seat's {@code driver} —
+     * default to false, and in both cases false is the absence of a claim rather than a chosen value:
+     * a bone nobody said was animated, a seat nobody said steers.
+     *
+     * @param what how to name the block in a warning, e.g. {@code bone 'tail'}
+     */
+    private boolean flag(
+            @NotNull Block block,
+            @NotNull String key,
+            @Nullable String boneName,
+            @NotNull String what
+    ) {
+        final Object raw = block.get(key);
+        if (raw == null) {
+            return false;
+        }
+        if (raw instanceof Boolean value) {
+            return value;
+        }
+        final String text = raw.toString().trim().toLowerCase(Locale.ROOT);
+        if (text.equals("true")) {
+            return true;
+        }
+        if (text.equals("false")) {
+            return false;
+        }
+        warn(boneName, "has a '" + block.spelled(key) + "' in " + what + " that is not true or false"
+                + " (got " + describe(raw) + "); read as false.");
+        return false;
     }
 
     /** Numbers, and strings that are numbers. Anything else is {@code null}. */
@@ -778,10 +1156,30 @@ final class RigFileReader {
         if (raw == null) {
             return "nothing";
         }
-        if (raw instanceof ConfigurationSection) {
+        if (raw instanceof ConfigurationSection || raw instanceof Map<?, ?>) {
+            // A mapping reaches here as a Map rather than a section whenever it is nested inside a
+            // list, which is every `seats:` entry.
             return "a mapping";
         }
         return "'" + raw + "'";
+    }
+
+    /** Every bone the file declared, by the key the rig matches on. */
+    private static @NotNull Set<String> boneKeys(@NotNull List<ParsedBone> declared) {
+        final Set<String> keys = LinkedHashSet.newLinkedHashSet(declared.size());
+        for (final ParsedBone bone : declared) {
+            keys.add(bone.key());
+        }
+        return keys;
+    }
+
+    /** The {@code clips} block's keys, canonicalised, derived from the roles themselves. */
+    private static @NotNull Set<String> clipKeys() {
+        final Set<String> keys = LinkedHashSet.newLinkedHashSet(ClipRole.COUNT);
+        for (final ClipRole role : ClipRole.values()) {
+            keys.add(canonical(role.key()));
+        }
+        return Set.copyOf(keys);
     }
 
     private static @NotNull String vector(float[] values) {
@@ -815,13 +1213,15 @@ final class RigFileReader {
 
     /**
      * A bone as the file declares it: its normalised key, the spelling to quote back at the author,
-     * the parent it names and whatever physics survived reading.
+     * the parent it names, whatever physics survived reading, and whether the model's own animations
+     * already drive it.
      */
     private record ParsedBone(
             @NotNull String key,
             @NotNull String spelling,
             @Nullable String parent,
-            @Nullable PhysicsProfile physics
+            @Nullable PhysicsProfile physics,
+            boolean animationOwned
     ) {
 
         /** The parent's name in the form the rig keys on, or {@code null} for a root. */

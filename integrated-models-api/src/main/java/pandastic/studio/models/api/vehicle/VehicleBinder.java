@@ -63,5 +63,39 @@ public interface VehicleBinder {
      * @throws IllegalArgumentException if {@code profile} is outside the bounds the operator configured,
      *                                  naming the component and the bound
      */
-    @NotNull Vehicle create(@NotNull Rig rig, @NotNull VehicleProfile profile, @NotNull Entity root);
+    default @NotNull Vehicle create(
+            @NotNull Rig rig,
+            @NotNull VehicleProfile profile,
+            @NotNull Entity root
+    ) {
+        return create(rig, profile, root, VehicleSetup.DEFAULT);
+    }
+
+    /**
+     * The same thing, with the two decisions that belong to one <em>kind</em> of vehicle.
+     *
+     * <p>{@link VehicleSetup} carries what this vehicle says to its riders and what each seat's inputs
+     * do. Both are the consumer's: a plugin shipping a horse and a tank wants different words for "this
+     * is full" and a different meaning for the gunner's trigger, and the only party that knows how many
+     * kinds exist is the plugin that creates them. Neither is validated against the operator's bounds,
+     * because there is no server-side range for a sentence.
+     *
+     * <p>Everything the three-argument overload says about threads, refusals and the one race applies
+     * unchanged.
+     *
+     * @param rig     the rig to render on it
+     * @param profile how it drives
+     * @param root    the entity carrying the hitbox, the collision and the replicated position
+     * @param setup   the messages and the per-seat controls. {@link VehicleSetup#DEFAULT} is this
+     *                plugin's own defaults and no per-seat controls
+     * @return the vehicle
+     * @throws IllegalStateException    as the three-argument overload
+     * @throws IllegalArgumentException as the three-argument overload
+     */
+    @NotNull Vehicle create(
+            @NotNull Rig rig,
+            @NotNull VehicleProfile profile,
+            @NotNull Entity root,
+            @NotNull VehicleSetup setup
+    );
 }

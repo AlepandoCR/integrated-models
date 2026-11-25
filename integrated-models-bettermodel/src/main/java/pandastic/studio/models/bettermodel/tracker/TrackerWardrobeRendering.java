@@ -1,4 +1,4 @@
-package pandastic.studio.models.internal.menu;
+package pandastic.studio.models.bettermodel.tracker;
 
 import kr.toxicity.model.api.BetterModel;
 import kr.toxicity.model.api.tracker.EntityTracker;
@@ -8,6 +8,8 @@ import kr.toxicity.model.api.tracker.TrackerUpdateAction;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import pandastic.studio.models.internal.menu.ModelAppearance;
+import pandastic.studio.models.internal.menu.WardrobeRendering;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -15,11 +17,12 @@ import java.util.Optional;
 /**
  * BetterModel's tracker registry, as a {@link WardrobeRendering}.
  *
- * <p>The adapter on the far side of that seam, and deliberately the only class in this package that
- * cannot be exercised without the renderer installed: a {@code Tracker} is a sealed class permitting only
- * the renderer's own subclasses, so one is not constructible here and there is no runtime copy of the
- * renderer in this project's test source set either. Everything with a decision in it therefore lives on
- * the other side of the seam, and what is left is five lookups and four delegations.
+ * <p>The adapter on the far side of that seam, and deliberately a class that cannot be exercised without
+ * the renderer installed: a {@code Tracker} is a sealed class permitting only the renderer's own
+ * subclasses, so one is not constructible in a test and there is no runtime copy of the renderer in this
+ * project's test source sets either. Everything with a decision in it therefore lives on the other side
+ * of the seam, in {@code integrated-models-internal}, and what is left here is five lookups and four
+ * delegations.
  *
  * <h2>The registry is reached by UUID</h2>
  * Not by adapting the Bukkit entity, which routes through the renderer's NMS layer for no gain: the
@@ -41,10 +44,14 @@ import java.util.Optional;
  * {@link ModelAppearance#physics()} and {@link ModelAppearance#firstPersonArms()} are not applied here,
  * because neither is expressible: the renderer's api jar has no first-person-arms concept at all, and
  * secondary motion is simulated on our side of the seam by a handle that offers no pause. Both are
- * carried in the value and remembered by {@link RiggedModelWardrobe} so the screen opens where the player
+ * carried in the value and remembered by {@code RiggedModelWardrobe} so the screen opens where the player
  * left it; neither changes what is rendered.
+ *
+ * <h2>Stateless and shareable</h2>
+ * No field at all: every answer is a registry lookup keyed by the player's UUID. So one instance serves
+ * the whole server and {@code BetterModelBackend} returns the same one every call.
  */
-final class TrackerWardrobeRendering implements WardrobeRendering {
+public final class TrackerWardrobeRendering implements WardrobeRendering {
 
     @Override
     public @NotNull Optional<String> wornModel(@NotNull Player viewer) {

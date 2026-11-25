@@ -9,7 +9,7 @@ import pandastic.studio.models.api.util.schedule.Ticker;
 import pandastic.studio.models.api.util.schedule.TickerController;
 
 /**
- * Scheduled components will be ticked by the base entity's scheduler {@link EntityScheduler} contained by the {@link pandastic.studio.models.api.util.schedule.TickerController} in {@link pandastic.studio.models.api.model.Model}
+ * Scheduled components will be ticked by the base entity's scheduler {@link EntityScheduler} contained by the {@link pandastic.studio.models.api.util.schedule.TickerController} in {@link pandastic.studio.models.api.model.EntityModel}
  * Entity schedulers ensure ticking only when the entity is available
  * @param <BaseEntityType>
  */

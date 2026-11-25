@@ -48,7 +48,24 @@ public interface VehicleVisualFactory {
      * @param binder the binding layer's entry point
      */
     static @NotNull VehicleVisualFactory binding(@NotNull ModelBinder binder) {
-        return (rig, root) -> new RiggedVehicleVisual(binder.bind(rig, root));
+        return binding(binder, SeatLocatorSource.renderer());
+    }
+
+    /**
+     * The same factory with an explicit locator source.
+     *
+     * <p>Exists because {@link SeatLocatorSource#renderer()} reaches the installed backend through a
+     * process-wide holder, which is right for production and unusable in a test. Nothing in the plugin's
+     * own wiring calls this form; a test that wants to see a seat resolve does.
+     *
+     * @param binder   the binding layer's entry point
+     * @param locators where each vehicle's seat locators are read from
+     */
+    static @NotNull VehicleVisualFactory binding(
+            @NotNull ModelBinder binder,
+            @NotNull SeatLocatorSource locators
+    ) {
+        return (rig, root) -> new RiggedVehicleVisual(binder.bind(rig, root), locators);
     }
 
     /** The factory for vehicles that carry no model. */

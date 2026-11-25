@@ -55,18 +55,36 @@ public final class ClientSteeredRoots {
      * @return whether it must not be used as a server-authoritative vehicle's root
      */
     public static boolean isKnownClientSteered(@NotNull Entity entity) {
+        // Delegated to the class form so there is one list rather than two. An entity's own class
+        // implements the Bukkit interfaces, so this is the same question instanceof asked.
+        return isKnownClientSteered(entity.getClass());
+    }
+
+    /**
+     * Whether {@code entityClass} is a type the server is known to let a rider's client steer.
+     *
+     * <p>The same question as {@link #isKnownClientSteered(Entity)}, asked before anything exists in the
+     * world. Which is what a seat carrier needs: its type comes from configuration, and an operator who
+     * named a boat must be refused <em>without</em> a boat having been spawned and removed again. The
+     * argument may be a Bukkit interface, as {@code EntityType#getEntityClass()} returns, or a server's
+     * own implementation class; assignability answers for both.
+     *
+     * @param entityClass the prospective type
+     * @return whether it must not be ridden under this plugin's authority model
+     */
+    public static boolean isKnownClientSteered(@NotNull Class<?> entityClass) {
         // Horses, donkeys, mules, skeleton and zombie horses, llamas and camels all reach the server's
         // AbstractHorse, which hands control to its first passenger once the conditions its class
         // imposes are met.
-        return entity instanceof AbstractHorse
+        return AbstractHorse.class.isAssignableFrom(entityClass)
                 // Every boat and raft, including the chest variants, which are boats in Bukkit's
                 // hierarchy as well as the server's.
-                || entity instanceof Boat
+                || Boat.class.isAssignableFrom(entityClass)
                 // Saddled, and the saddle can be added after the vehicle was created.
-                || entity instanceof Pig
-                || entity instanceof Strider
+                || Pig.class.isAssignableFrom(entityClass)
+                || Strider.class.isAssignableFrom(entityClass)
                 // Rideable by several players at once and steered by the one in the driving seat, which
                 // makes it the worst possible root for a server-authoritative vehicle.
-                || entity instanceof HappyGhast;
+                || HappyGhast.class.isAssignableFrom(entityClass);
     }
 }

@@ -7,6 +7,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 import org.jetbrains.annotations.NotNull;
 import pandastic.studio.models.api.ai.CreatureAi;
+import pandastic.studio.models.api.input.PlayerInputController;
+import pandastic.studio.models.api.model.ModelManager;
 import pandastic.studio.models.api.render.EmissionCadence;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.internal.ai.AiRuntime;
@@ -26,6 +28,7 @@ import pandastic.studio.models.internal.decoration.DecorationBinderImpl;
 import pandastic.studio.models.internal.decoration.DecorationDriverLoop;
 import pandastic.studio.models.internal.decoration.DecorationSettings;
 import pandastic.studio.models.internal.decoration.DecorationSettingsSource;
+import pandastic.studio.models.internal.input.InputRuntime;
 import pandastic.studio.models.internal.nms.MovementBridge;
 import pandastic.studio.models.internal.nms.NmsBridge;
 import pandastic.studio.models.internal.nms.NmsBridgeLookup;
@@ -38,6 +41,7 @@ import pandastic.studio.models.internal.rig.RigDiagnostic;
 import pandastic.studio.models.internal.rig.RigLoadResult;
 import pandastic.studio.models.internal.rig.RigLoadSettings;
 import pandastic.studio.models.internal.rig.RigLoader;
+import pandastic.studio.models.internal.model.ModelManagerImpl;
 import pandastic.studio.models.internal.rig.ModelBoneSource;
 import pandastic.studio.models.internal.rig.RigFactory;
 import pandastic.studio.models.internal.sim.AsyncSimulationScheduler;
@@ -48,6 +52,8 @@ import pandastic.studio.models.internal.sim.SimulationLoop;
 import pandastic.studio.models.internal.sim.SimulationScheduler;
 import pandastic.studio.models.internal.sim.SimulationSettings;
 import pandastic.studio.models.internal.sim.SimulationSettingsSource;
+import pandastic.studio.models.internal.vehicle.RiderInputSource;
+import pandastic.studio.models.internal.vehicle.SeatChartSink;
 import pandastic.studio.models.internal.vehicle.VehicleBinderImpl;
 import pandastic.studio.models.internal.vehicle.VehicleHostFactory;
 import pandastic.studio.models.internal.vehicle.VehicleSettings;
@@ -142,12 +148,32 @@ final class ModelRuntime {
     private final @NotNull DecorationSettingsSource decorationSettings;
     private final @NotNull VehicleSettingsSource vehicleSettings;
 
+    /**
+     * The published registry of every model, decoration and vehicle this plugin has in the world.
+     *
+     * <p>Owned here rather than by the plugin class, which is where it used to live, because its contents
+     * are exactly the three binders' live handles: a registry whose lifetime was longer than theirs could
+     * outlive a shutdown still naming models that are gone. {@link #shutdown()} empties it by despawning
+     * every handle, so the two can only disagree if something throws, and the binders cover that too.
+     */
+    private final @NotNull ModelManagerImpl modelManager = new ModelManagerImpl();
+
     private final @NotNull SimulationLoop loop;
     private final @NotNull DecorationDriverLoop drivers;
     private final @NotNull ModelBinderImpl models;
     private final @NotNull DecorationBinderImpl decorations;
     private final @NotNull VehicleBinderImpl vehicles;
     private final @NotNull AiRuntime ai;
+
+    /**
+     * The input layer: where every rider's keys and actions are observed and published.
+     *
+     * <p>Held so that {@link #shutdown()} can stop it. That is not housekeeping: it registers a
+     * Bukkit listener and, when this server has an adapter, a handler on every player's connection,
+     * and a capture source left running after the classloader closes fails on its first lazy class
+     * load — the same hazard the two loops carry and the reason they are stopped first.
+     */
+    private final @NotNull InputRuntime inputs;
     private final @NotNull RigFactory rigFactory;
 
     private final @NotNull Map<String, Rig> rigs = new ConcurrentHashMap<>();
@@ -190,7 +216,14 @@ final class ModelRuntime {
         final NmsBridgeResolution nms = NmsBridgeLookup.resolve(Bukkit.getMinecraftVersion());
         final NmsBridge bridge = nms.bridge();
 
-        // 4. The AI layer. Never refuses: a server with no adapter gets a runtime whose service is
+        // 4. The input layer. Like the AI layer it never refuses: the movement half is platform API,
+        //    so a server with no adapter still observes and publishes every rider's keys and loses only
+        //    the ability to suppress one. Built before the vehicle hosts because the vehicle binder is
+        //    given its controller.
+        final InputRuntime inputs = InputRuntime.create(
+                plugin, logger, SimulationClock.SYSTEM, configs::input, bridge);
+
+        // 5. The AI layer. Never refuses: a server with no adapter gets a runtime whose service is
         //    empty and whose reason start() logs once.
         final AiRuntime ai = AiRuntime.create(plugin, nms, aiSource(configs),
                 (message, failure) -> logger.error(Component.text(message, NamedTextColor.RED),
@@ -213,7 +246,8 @@ final class ModelRuntime {
                 // Rigs with conventional limb names receive the configured walk cycle; decorative rigs
                 // still return null and retain their physics-only behaviour.
                 new DerivedLocomotionStageSource(configs),
-                ai);
+                ai,
+                inputs);
     }
 
     /**
@@ -258,13 +292,15 @@ final class ModelRuntime {
             @NotNull VehicleHostFactory hosts,
             @NotNull RigBindValidator validator,
             @NotNull LocomotionStageSource locomotion,
-            @NotNull AiRuntime ai
+            @NotNull AiRuntime ai,
+            @NotNull InputRuntime inputs
     ) {
         this.logger = Objects.requireNonNull(logger, "logger");
         this.configs = Objects.requireNonNull(configs, "configs");
         this.dataFolder = Objects.requireNonNull(dataFolder, "dataFolder");
         this.renderSettings = Objects.requireNonNull(renderSettings, "renderSettings");
         this.ai = Objects.requireNonNull(ai, "ai");
+        this.inputs = Objects.requireNonNull(inputs, "inputs");
 
         // The remaining seams are pure functions of the configuration, so they are built here rather
         // than demanded of a caller. Each is memoised against the live snapshot; see SnapshotCache.
@@ -282,12 +318,25 @@ final class ModelRuntime {
         //    vehicle's visual is a model bound through VehicleVisualFactory.binding(ModelBinder), so the
         //    vehicle layer is built *on* the binding layer and cannot be constructed before it. It is
         //    also why the two are torn down in the opposite order; see shutdown().
+        // configs::clips satisfies the clip layer's source directly and allocation-free, because the
+        // snapshot stores that value whole — the same property view() and binding() have, and the
+        // reason none of the three needs the memoisation simulationSource(...) does.
         this.models = new ModelBinderImpl(anchors, this.loop, this.simulationSettings,
-                configs::binding, validator, locomotion);
+                configs::binding, validator, locomotion, configs::clips, this.modelManager);
         this.decorations = new DecorationBinderImpl(decorationAnchors, this.loop, this.drivers,
-                this.simulationSettings, validator);
+                this.simulationSettings, validator, this.modelManager);
+        // The seat chart goes to the component logger rather than through the simulation logger: it is
+        // an operator-facing report about a rig, not a diagnostic about a step that threw, and its
+        // colour is how it says which seats nobody can sit on.
+        // The input layer is handed in rather than defaulted: VehicleBinderImpl's shorter constructor
+        // falls back to RiderInputSource.fromHost, which carries the seven movement flags and nothing
+        // else. That fallback is honest for a server with no input layer, but this one has one, and a
+        // vehicle built on the fallback can never see an action input or answer a combination — so the
+        // whole published input api would be unreachable from the one place that most wants it.
         this.vehicles = new VehicleBinderImpl(hosts, VehicleVisualFactory.binding(this.models),
-                this.vehicleSettings, clock, simulationLogger);
+                this.vehicleSettings, clock, simulationLogger,
+                SeatChartSink.component(logger), this.modelManager,
+                RiderInputSource.of(this.inputs.controller()));
 
         this.rigFactory = RigFactory.of(this::rigs, ModelBoneSource.renderer(), this::rigLoadSettings);
         loadRigs();
@@ -307,6 +356,9 @@ final class ModelRuntime {
     void start() {
         this.loop.start();
         this.drivers.start();
+        // Says its own capability line, including the sentence naming what a server without an adapter
+        // loses, so there is nothing to report about it here.
+        this.inputs.start();
 
         final EmissionCadence cadence = this.simulationSettings.current().cadence();
         this.logger.info(Component.text("Simulating at " + this.loop.simulationHz()
@@ -366,25 +418,41 @@ final class ModelRuntime {
         this.loop.stop();
         this.drivers.stop();
 
-        // 2. The world, in the reverse of construction order.
+        // 2. The input layer, before the world rather than after it. Stopping it closes every binding,
+        //    and a binding is a consumer's handler: it may touch a vehicle, and it can be dispatched
+        //    from a connection thread, so leaving it live while the three despawnAll() calls below empty
+        //    the world is the one ordering here that could hand a handler a half-torn-down vehicle.
+        final int closedBindings = this.inputs.shutdown();
+
+        // 3. The world, in the reverse of construction order.
         final int stoppedVehicles = this.vehicles.despawnAll();
         final int stoppedDecorations = this.decorations.despawnAll();
         final int stoppedModels = this.models.despawnAll();
 
-        // 3. The AI layer.
+        // 4. The AI layer.
         final int uninstalled = this.ai.shutdown();
 
-        // 4. State.
+        // 5. State.
         this.rigs.clear();
 
         this.logger.info(Component.text("Stopped: " + stoppedModels + " model(s), "
                 + stoppedDecorations + " decoration(s), " + stoppedVehicles + " vehicle(s), "
-                + uninstalled + " AI installation(s)"));
+                + uninstalled + " AI installation(s), " + closedBindings + " input binding(s)"));
     }
 
     /** Whether {@link #shutdown()} has run. */
     synchronized boolean isStopped() {
         return this.stopped;
+    }
+
+    /**
+     * The registry every bound model, decoration and vehicle is published in.
+     *
+     * <p>Part of the api, unlike the two loops below it: a consumer asking what this server has in the
+     * world is asking something it cannot work out for itself, and reading this changes nothing.
+     */
+    @NotNull ModelManager modelManager() {
+        return this.modelManager;
     }
 
     /** The loop every simulation is driven from. */
@@ -427,6 +495,18 @@ final class ModelRuntime {
     /** The AI service, if this server has an NMS adapter. */
     @NotNull Optional<CreatureAi> creatureAi() {
         return this.ai.creatureAi();
+    }
+
+    /**
+     * Where a consumer reads a player's input and binds to a combination.
+     *
+     * <p>Never absent, unlike {@link #creatureAi()}: the movement half is platform API, so a server
+     * with no NMS adapter keeps every observation and loses only the ability to suppress an input.
+     * {@code PlayerInputController#capabilities()} is how a caller finds out which, and
+     * {@code unavailableReason()} is why.
+     */
+    @NotNull PlayerInputController inputController() {
+        return this.inputs.controller();
     }
 
     /** Where the render layer reads its settings. */
@@ -640,7 +720,8 @@ final class ModelRuntime {
     static @NotNull RenderSettingsSource renderSource(@NotNull ConfigService configs) {
         final SnapshotCache<RenderSettings> cache = new SnapshotCache<>(snapshot -> new RenderSettings(
                 snapshot.render().boneDirtyEpsilonRadians(),
-                snapshot.render().boneNamesInMessage()));
+                snapshot.render().boneNamesInMessage(),
+                snapshot.render().animationOwnership()));
         return () -> cache.of(configs.snapshot());
     }
 
@@ -677,7 +758,11 @@ final class ModelRuntime {
                     options.controlPeriodTicks(),
                     options.maxStepTicks(),
                     options.maxLocalStepBlocks(),
-                    options.restSpeedBlocksPerTick());
+                    options.restSpeedBlocksPerTick(),
+                    // Handed through rather than rebuilt: the snapshot stores the seat settings whole,
+                    // which is what keeps this bundle's own identity stable across two reads with the
+                    // configuration unchanged.
+                    options.seats());
         });
         return () -> cache.of(configs.snapshot());
     }
@@ -720,6 +805,7 @@ final class ModelRuntime {
         return new RigLoadSettings(
                 new AngularPhysicsSolver(snapshot.physics()),
                 snapshot.rigBounds(),
+                snapshot.seatBounds(),
                 snapshot.profileBounds(),
                 snapshot.profileDefaults(),
                 snapshot.rig().stabilityMargin(),

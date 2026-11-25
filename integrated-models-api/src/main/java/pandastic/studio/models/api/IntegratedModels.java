@@ -4,6 +4,7 @@ import org.jetbrains.annotations.NotNull;
 import pandastic.studio.models.api.ai.CreatureAi;
 import pandastic.studio.models.api.binding.ModelBinder;
 import pandastic.studio.models.api.decoration.DecorationBinder;
+import pandastic.studio.models.api.input.PlayerInputController;
 import pandastic.studio.models.api.model.ModelManager;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.vehicle.VehicleBinder;
@@ -18,9 +19,9 @@ import java.util.Optional;
  * reloaded or replaced.
  *
  * <h2>What is on here, and what deliberately is not</h2>
- * Exactly the four things a consumer cannot build for itself: the rigs this server loaded, and the
- * three ways to put one of them into the world — on an entity, at a location, or as something a player
- * rides — plus the AI service when the server has an adapter for it.
+ * Exactly the things a consumer cannot build for itself: the rigs this server loaded, the three ways to
+ * put one of them into the world — on an entity, at a location, or as something a player rides — the
+ * registry of everything that is currently up, and the AI service when the server has an adapter for it.
  *
  * <p>Everything else this plugin owns is plumbing and stays off here on purpose. The simulation loop,
  * the configuration service, the rig loader and the render seam are how this plugin schedules and tunes
@@ -31,20 +32,24 @@ import java.util.Optional;
 public interface IntegratedModels {
 
     /**
-     * The registry of the older component-based model API.
+     * Every model this plugin currently has in the world.
      *
-     * <p><strong>It is permanently empty, and this is the one method on this interface that does not
-     * work.</strong> Nothing in this plugin ever calls {@link ModelManager#addModel}, so the collection
-     * it hands back starts empty and stays that way. The component API it belongs to was carried over
-     * from the project this one was ported from, where it was already unwired, and it has no concrete
-     * model type: {@code ModelImpl} is abstract and nothing extends it.
+     * <p>One registry for all four kinds of {@link pandastic.studio.models.api.model.Model}, populated by
+     * the three binders below: a rigged model, a decoration or a vehicle is entered the moment its binder
+     * hands it out and removes itself as the last step of its own teardown. So this is the answer to
+     * "what does this server have up right now", and it needs no cooperation from the consumer that bound
+     * the model.
      *
-     * <p>Said plainly because the trap is sitting next to four methods that do work. If you want to put
-     * a rig into the world, use {@link #getModelBinder()}, {@link #getDecorationBinder()} or
-     * {@link #getVehicleBinder()}. Reach for this only if you are deliberately subclassing the
-     * component API yourself and registering your own models in it.
+     * <p>It was not always. Until the four model kinds were given a common root this returned a registry
+     * nothing ever called {@code addModel} on, and said so in this paragraph; a consumer that read that
+     * and wrote its own bookkeeping can delete it.
      *
-     * @return the component registry, which nothing populates
+     * <p>Models a consumer builds by subclassing the component API
+     * ({@link pandastic.studio.models.api.model.EntityModel}) are still its own to register, because
+     * nothing in this plugin constructs one — {@link ModelManager#addModel} and
+     * {@link ModelManager#removeModel} are public for that case.
+     *
+     * @return the registry, never a live view
      */
     @NotNull ModelManager getModelManager();
 
@@ -87,6 +92,25 @@ public interface IntegratedModels {
      * @return the service, or empty when this server has no adapter
      */
     @NotNull Optional<CreatureAi> getCreatureAi();
+
+    /**
+     * Where a player's input is read, and where a handler is bound to one input or to a combination.
+     *
+     * <p>Safe to hold, and <strong>never absent</strong> — which is the difference between this and
+     * {@link #getCreatureAi()}. The seven movement keys come from platform API, so every server
+     * observes them; what a server without this plugin's NMS layer loses is the ability to
+     * <em>suppress</em> a movement key and to see one before the server acts on it. Ask
+     * {@link PlayerInputController#capabilities()} rather than assuming, and
+     * {@link PlayerInputController#unavailableReason()} for the sentence naming what is missing.
+     *
+     * <p>Reading a snapshot is one volatile read of an immutable value, so a consumer's own control
+     * step should read it <em>once</em> per step rather than per key — the same discipline the rest of
+     * this plugin's off-tick work follows, and for the same reason: two reads can straddle an
+     * observation and disagree about what the player was holding.
+     *
+     * @return the input layer
+     */
+    @NotNull PlayerInputController getInputController();
 
     /**
      * Every rig loaded from disk.

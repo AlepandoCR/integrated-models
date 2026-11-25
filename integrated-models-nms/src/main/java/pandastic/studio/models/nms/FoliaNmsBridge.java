@@ -2,6 +2,7 @@ package pandastic.studio.models.nms;
 
 import org.jetbrains.annotations.NotNull;
 import pandastic.studio.models.internal.nms.BrainBridge;
+import pandastic.studio.models.internal.nms.InputCaptureBridge;
 import pandastic.studio.models.internal.nms.MovementBridge;
 import pandastic.studio.models.internal.nms.NavigationBridge;
 import pandastic.studio.models.internal.nms.NmsBridge;
@@ -29,6 +30,16 @@ public final class FoliaNmsBridge implements NmsBridge {
     private final @NotNull NavigationBridge navigation = new FoliaNavigationBridge();
     private final @NotNull RiderInputBridge riderInput = new FoliaRiderInputBridge();
     private final @NotNull MovementBridge movement = new FoliaMovementBridge();
+
+    /**
+     * Packet-level input capture.
+     *
+     * <p>One instance for the whole server, like the other four, and for the stated reason — it holds
+     * no per-entity state. What it does hold is a map from channel to the handler installed on it,
+     * which is per <em>connection</em> rather than per entity and is exactly the thing that cannot be
+     * recomputed: a handler has to be removed by identity.
+     */
+    private final @NotNull InputCaptureBridge inputCapture = new FoliaPacketInputCapture();
 
     /**
      * Package-private: a bridge is reached through {@link FoliaNmsBridgeProvider}, so that the
@@ -66,5 +77,11 @@ public final class FoliaNmsBridge implements NmsBridge {
     @NotNull
     public MovementBridge movement() {
         return this.movement;
+    }
+
+    @Override
+    @NotNull
+    public InputCaptureBridge inputCapture() {
+        return this.inputCapture;
     }
 }

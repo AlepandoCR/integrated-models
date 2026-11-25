@@ -6,13 +6,41 @@ import pandastic.studio.models.api.model.component.ModelComponent;
 
 import java.util.Optional;
 
+/**
+ * The animation state of an {@link pandastic.studio.models.api.model.EntityModel}, as a component.
+ *
+ * <p>The three methods that drive a clip report whether the renderer accepted it, which is what lets
+ * {@link pandastic.studio.models.api.model.AnimatedModel} implement
+ * {@link pandastic.studio.models.api.model.Model#playAnimation(String)} by routing it here rather than
+ * guessing. Each still records {@code animationId} as the current animation whatever the renderer
+ * answered, so {@link #getAnimation()} reports what was asked for.
+ */
 public interface ModelAnimator<BaseEntityType extends Entity> extends ModelComponent<BaseEntityType> {
 
-    void setAnimation(@NotNull String animationId);
+    /**
+     * Plays {@code animationId}, with whatever metadata is set.
+     *
+     * @param animationId the clip to play
+     * @return whether the renderer started it; {@code false} for an unbound model or a clip the model
+     *         does not declare
+     */
+    boolean setAnimation(@NotNull String animationId);
 
-    void setAnimation(@NotNull String animationId, @NotNull Runnable runnable);
+    /**
+     * {@link #setAnimation(String)} with a callback run when the clip ends.
+     *
+     * @param animationId the clip to play
+     * @param runnable what to run when it finishes
+     * @return whether the renderer started it
+     */
+    boolean setAnimation(@NotNull String animationId, @NotNull Runnable runnable);
 
-    void stopAnimation();
+    /**
+     * Stops whatever clip is currently set.
+     *
+     * @return whether a clip was stopped
+     */
+    boolean stopAnimation();
 
     void setMetadata(@NotNull AnimationMetadata animationMetadata);
 

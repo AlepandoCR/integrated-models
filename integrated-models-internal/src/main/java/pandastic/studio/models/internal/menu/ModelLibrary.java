@@ -1,8 +1,12 @@
 package pandastic.studio.models.internal.menu;
 
 import org.jetbrains.annotations.NotNull;
+import pandastic.studio.models.internal.spi.ModelDefinition;
+import pandastic.studio.models.internal.spi.ModelRenderBackend;
+import pandastic.studio.models.internal.spi.ModelRenderBackends;
 
 import java.util.Collection;
+import java.util.List;
 
 /**
  * What the renderer has loaded, reduced to the two questions a menu asks of it.
@@ -14,17 +18,17 @@ import java.util.Collection;
  * hold right now, in whatever order its own map iterates. The catalogue is the policy; this is the fact.
  *
  * <p>Separating them is also the only way the policy is testable. Every answer below ultimately comes
- * from a static method on BetterModel's entry point, which cannot be faked and cannot even be
- * <em>loaded</em> in this project's test source set — the renderer is {@code testCompileOnly}, so there
- * is no runtime copy of it. Keeping the static calls in one small adapter means every decision about
- * order, membership and counting lives on this side of the seam, where a test can reach it.
+ * from the installed rendering backend, which cannot be faked and cannot even be <em>loaded</em> in this
+ * project's test source set — the renderer lives in another module and is {@code compileOnly} even there,
+ * so there is no runtime copy of it. Keeping the backend calls behind this seam means every decision
+ * about order, membership and counting lives on this side of it, where a test can reach it.
  *
  * <h2>No caching, by contract</h2>
  * An implementation answers from whatever the renderer holds at the moment it is asked.
  * <strong>Both methods are expected to be called once per screen build</strong>, and neither may hold a
- * copy between builds: BetterModel reloads its own models on its own operator command and reports that
- * to nobody, so a cached list has no event that could invalidate it and would go stale with nothing to
- * point at. See {@link LibraryModelCatalogue} for the cost of that decision, which is one copy and one
+ * copy between builds: a rendering library reloads its own models on its own operator command and reports
+ * that to nobody, so a cached list has no event that could invalidate it and would go stale with nothing
+ * to point at. See {@link LibraryModelCatalogue} for the cost of that decision, which is one copy and one
  * sort per screen.
  */
 public interface ModelLibrary {
@@ -47,15 +51,41 @@ public interface ModelLibrary {
     @NotNull Collection<String> animationIds(@NotNull String modelId);
 
     /**
-     * The production library: BetterModel's own model registry.
+     * The production library: the installed rendering backend's own model registry.
      *
-     * <p>A factory rather than a constructor so that the one class in this package holding a
-     * {@code kr.toxicity} import is package-private and is never named, and therefore never loaded, by
-     * anything that only wants the seam.
+     * <p>Two lookups and no decision, which is why it is a lambda here rather than a class: everything
+     * renderer-specific is already behind {@link ModelRenderBackend}, in another module, and this seam
+     * exists only so the policy above it can be tested without one.
+     *
+     * <p>A model that vanished between two clicks answers an empty animation list rather than failing.
+     * That is the ordinary case rather than the exotic one — the picker re-checks membership on every
+     * click precisely because a renderer reload between two clicks is ordinary — and the honest answer
+     * for a model that has gone is "it declares no animations".
      *
      * @return the library over the installed renderer
      */
     static @NotNull ModelLibrary renderer() {
-        return new RendererModelLibrary();
+        return new ModelLibrary() {
+
+            @Override
+            public @NotNull Collection<String> modelIds() {
+                // The renderer's own key set, which may be unmodifiable and live. Handed straight out:
+                // the contract says a caller that keeps it copies it, and LibraryModelCatalogue does
+                // exactly that when it sorts.
+                return ModelRenderBackends.require().modelIds();
+            }
+
+            @Override
+            public @NotNull Collection<String> animationIds(@NotNull String modelId) {
+                return ModelRenderBackends.require().definition(modelId)
+                        .map(ModelDefinition::animationIds)
+                        .orElseGet(List::of);
+            }
+
+            @Override
+            public @NotNull String toString() {
+                return "ModelLibrary[renderer]";
+            }
+        };
     }
 }

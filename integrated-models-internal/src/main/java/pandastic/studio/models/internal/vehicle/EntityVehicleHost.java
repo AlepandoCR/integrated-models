@@ -13,7 +13,6 @@ import pandastic.studio.models.api.vehicle.RiderIntent;
 import pandastic.studio.models.internal.nms.MovementBridge;
 import pandastic.studio.models.internal.nms.RiderInputBridge;
 
-import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -45,6 +44,12 @@ import java.util.UUID;
  *       through the seam. It is the supported path for leaving a region, it carries the whole passenger
  *       tree, and it has to keep working when there is no adapter at all.</li>
  * </ul>
+ *
+ * <h2>It also spawns the seat carriers, and does not seat anybody on the root</h2>
+ * A rider sits on a <strong>locator</strong> of the model, through an invisible carrier entity — see
+ * {@link SeatCarrier} — so this class spawns carriers in the root's world and has no {@code mount} at
+ * all. The root's own {@link #dismount()} survives for one reason only: a passenger somebody else put on
+ * it must not be left aboard a vehicle that has stopped.
  *
  * <h2>Why ownership is checked rather than assumed</h2>
  * {@code Bukkit.isOwnedByCurrentRegion(entity)} is documented as the only appropriate way to check for
@@ -208,30 +213,23 @@ public final class EntityVehicleHost implements VehicleHost {
     }
 
     @Override
-    public @Nullable Player rider() {
-        // The first passenger, which is the server's own notion of the one in the driving seat. A
-        // vehicle with a non-player passenger has no rider as far as this layer is concerned; the
-        // passenger still travels with it, because the platform moves the whole tree.
-        final List<Entity> passengers = this.entity.getPassengers();
-        if (passengers.isEmpty()) {
-            return null;
-        }
-        final Entity first = passengers.getFirst();
-        return first instanceof final Player player ? player : null;
-    }
-
-    @Override
-    public boolean mount(@NotNull Player newRider) {
-        Objects.requireNonNull(newRider, "rider");
-        // addPassenger rather than the rider's own startRiding, because the vehicle is the thing this
-        // thread owns. The platform guards a mount whose two entities are in different regions and
-        // refuses it, which arrives here as false.
-        return this.entity.addPassenger(newRider);
-    }
-
-    @Override
     public boolean dismount() {
         return this.entity.eject();
+    }
+
+    @Override
+    public @Nullable SeatCarrier spawnCarrier(
+            @NotNull String entityTypeName,
+            double x,
+            double y,
+            double z,
+            float yawDegrees
+    ) {
+        Objects.requireNonNull(entityTypeName, "entityTypeName");
+        // The movement seam is shared with the root's, so a server with no adapter moves its carriers the
+        // same way it moves its vehicles: through the platform's asynchronous teleport, expensively.
+        return EntitySeatCarrier.spawn(
+                this.plugin, this.entity, this.movement, entityTypeName, x, y, z, yawDegrees);
     }
 
     @Override

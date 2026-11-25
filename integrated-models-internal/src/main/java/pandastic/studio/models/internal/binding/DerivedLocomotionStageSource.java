@@ -53,14 +53,22 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
         binding.handSwingAxis(rig.handSwingAxis());
         bindFirstPresent(binding, rig, GaitRole.TORSO, "body", "torso", "squirrel");
         bindFirstPresent(binding, rig, GaitRole.HEAD, "head", "h_head");
-        bindFirstPresent(binding, rig, GaitRole.LEFT_UPPER_ARM, "left_arm", "leftarm", "front_leg1");
-        bindFirstPresent(binding, rig, GaitRole.LEFT_FOREARM, "left_forearm", "leftarm_low");
+        bindFirstPresent(binding, rig, GaitRole.LEFT_UPPER_ARM,
+                "left_arm", "leftarm", "leftfrontleg", "front_leg1");
+        bindFirstPresent(binding, rig, GaitRole.LEFT_FOREARM,
+                "left_forearm", "leftarm_low", "leftfrontleg_low");
         bindIfPresent(binding, rig, GaitRole.LEFT_HAND, "left_hand");
-        bindFirstPresent(binding, rig, GaitRole.RIGHT_UPPER_ARM, "right_arm", "rightarm", "front_leg2");
-        bindFirstPresent(binding, rig, GaitRole.RIGHT_FOREARM, "right_forearm", "rightarm_low");
+        bindFirstPresent(binding, rig, GaitRole.RIGHT_UPPER_ARM,
+                "right_arm", "rightarm", "rightfrontleg", "front_leg2");
+        bindFirstPresent(binding, rig, GaitRole.RIGHT_FOREARM,
+                "right_forearm", "rightarm_low", "rightfrontleg_low");
         bindIfPresent(binding, rig, GaitRole.RIGHT_HAND, "right_hand");
         final boolean quadruped = (rig.indexOf("leftleg").isPresent()
-                && rig.indexOf("rightleg").isPresent())
+                && rig.indexOf("rightleg").isPresent()
+                && rig.indexOf("leftarm").isPresent()
+                && rig.indexOf("rightarm").isPresent())
+                || (rig.indexOf("left_leg").isPresent()
+                && rig.indexOf("right_leg").isPresent())
                 || (rig.indexOf("back_leg1").isPresent()
                 && rig.indexOf("back_leg2").isPresent()
                 && (rig.indexOf("front_leg1").isPresent() || rig.indexOf("front_leg2").isPresent()));
@@ -69,8 +77,10 @@ public final class DerivedLocomotionStageSource implements LocomotionStageSource
         }
         final String leftThighName = firstPresent(rig, "left_leg", "leftleg", "back_leg1");
         final String rightThighName = firstPresent(rig, "right_leg", "rightleg", "back_leg2");
-        final String rightShinName = firstPresent(rig, "right_leg_joint", "rightleg_low");
-        final String leftShinName = firstPresent(rig, "left_leg_joint", "leftleg_low");
+        final String rightShinName = firstPresent(rig,
+                "right_leg_joint", "rightleg_low", "right_leg_low");
+        final String leftShinName = firstPresent(rig,
+                "left_leg_joint", "leftleg_low", "left_leg_low");
         final float thigh = segmentLength(modelBones, rightThighName, rightShinName);
         final float measuredShin = segmentLength(modelBones, rightShinName, "right_foot");
         final float shin = Float.isFinite(measuredShin) ? measuredShin : thigh;

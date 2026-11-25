@@ -4,7 +4,7 @@ plugins {
 
 allprojects {
     group = "pandastic.studio"
-    version = "1.0.9-SNAPSHOT"
+    version = "1.1.0-SNAPSHOT"
 }
 
 subprojects {
@@ -59,18 +59,24 @@ subprojects {
     }
 }
 
-// The root project holds no sources. It exists to aggregate the two modules and to
+// The root project holds no sources. It exists to aggregate the modules and to
 // produce the single file an operator drops into a server's plugins/ folder.
 val apiProject = project(":${rootProject.name}-api")
 val internalProject = project(":${rootProject.name}-internal")
 
+// The rendering backend, and the module that assembles the shaded jar. It is the backend rather than the
+// engine because a shadow jar contains its own project's classes plus its runtime classpath: built from
+// the engine, the jar would carry no backend and the plugin would refuse to enable. Swapping renderer
+// means repointing this one line at the new backend module.
+val backendProject = project(":${rootProject.name}-bettermodel")
+
 tasks {
     val copyJar = register<Copy>("copyJar") {
-        description = "Copies the shaded JAR from the internal module into this project's build/libs directory"
-        val internalShadowTask = internalProject.tasks.named("shadowJar")
-        dependsOn(internalShadowTask)
+        description = "Copies the shaded JAR from the rendering backend module into this project's build/libs directory"
+        val backendShadowTask = backendProject.tasks.named("shadowJar")
+        dependsOn(backendShadowTask)
 
-        from(internalShadowTask)
+        from(backendShadowTask)
         into(layout.buildDirectory.dir("libs"))
 
         rename { "${rootProject.name}.jar" }
@@ -80,6 +86,7 @@ tasks {
         dependsOn(
             apiProject.tasks.named("build"),
             internalProject.tasks.named("build"),
+            backendProject.tasks.named("build"),
             copyJar
         )
 

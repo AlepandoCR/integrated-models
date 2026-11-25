@@ -1,10 +1,6 @@
 package pandastic.studio.models.internal.binding;
 
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
-import kr.toxicity.model.api.BetterModel;
-import kr.toxicity.model.api.bukkit.platform.BukkitAdapter;
-import kr.toxicity.model.api.data.renderer.ModelRenderer;
-import kr.toxicity.model.api.tracker.EntityTracker;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
@@ -14,6 +10,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
+import pandastic.studio.models.internal.spi.ModelRenderBackends;
 
 import java.util.Objects;
 
@@ -102,6 +99,15 @@ public final class EntityAnchor implements ModelAnchor {
                 // by something", not "is there a block underneath right now".
                 !this.entity.isOnGround(),
                 this.entity instanceof Player player ? this.attacks.sequence(player) : 0L);
+        if (this.entity instanceof LivingEntity living && !(this.entity instanceof Player)) {
+            final org.bukkit.util.Vector velocity = living.getVelocity();
+            final double heading = Math.toRadians(living.getBodyYaw());
+            final double sin = Math.sin(heading);
+            final double cos = Math.cos(heading);
+            final float forward = (float) (-velocity.getX() * sin + velocity.getZ() * cos);
+            final float side = (float) (velocity.getX() * cos + velocity.getZ() * sin);
+            sample.setMovementFallback(forward, side);
+        }
         return true;
     }
 
@@ -140,25 +146,18 @@ public final class EntityAnchor implements ModelAnchor {
                 .execute(this.plugin, work, null, DEFERRED_DELAY_TICKS);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Handed straight to the installed rendering backend, which is the only part of this class that
+     * is not plain Bukkit. The backend takes ownership of whatever it creates, so a bind that fails
+     * leaves nothing standing in the world — see
+     * {@link pandastic.studio.models.internal.spi.ModelRenderBackend#bindEntity}.
+     */
     @Override
     public @NotNull RenderBinding render(@NotNull Rig rig) {
         Objects.requireNonNull(rig, "rig");
-        final ModelRenderer renderer = BetterModel.model(rig.getModelId()).orElseThrow(
-                () -> new IllegalStateException(
-                        "Rig '" + rig.getName() + "' points at model '" + rig.getModelId()
-                                + "', which BetterModel has not loaded. Check the model name and that"
-                                + " its file is in BetterModel's model folder."));
-        final EntityTracker tracker = renderer.create(BukkitAdapter.adapt(this.entity));
-        // Takes ownership of the tracker, including closing it if the rig cannot be bound.
-        final TrackerRenderBinding binding = TrackerRenderBinding.bind(rig, tracker, this.renderSettings);
-        if (this.entity instanceof Player player
-                && !tracker.registry().spawn(BukkitAdapter.adapt(player))) {
-            binding.close();
-            throw new IllegalStateException(
-                    "BetterModel could not spawn rig '" + rig.getName() + "' for player "
-                            + player.getName() + ".");
-        }
-        return binding;
+        return ModelRenderBackends.require().bindEntity(this.entity, rig, this.renderSettings);
     }
 
     @Override

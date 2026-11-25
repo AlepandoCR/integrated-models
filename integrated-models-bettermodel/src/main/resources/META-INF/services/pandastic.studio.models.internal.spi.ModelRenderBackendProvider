@@ -1,0 +1,5 @@
+# The BetterModel rendering backend. The ONLY place in this repository that names an implementation of
+# pandastic.studio.models.internal.spi.ModelRenderBackendProvider — the engine module discovers it with
+# java.util.ServiceLoader and holds no string naming it. Swapping renderer means a different module with
+# a file like this one, and no edit to integrated-models-internal.
+pandastic.studio.models.bettermodel.BetterModelBackendProvider

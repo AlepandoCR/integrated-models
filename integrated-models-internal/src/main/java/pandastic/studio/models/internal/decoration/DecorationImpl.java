@@ -181,8 +181,14 @@ public final class DecorationImpl implements Decoration, DrivenDecoration, Culla
         return this.anchor.worldId();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Implements the root's {@code isSpawned()}, which is what {@code isAlive()} delegates to — the
+     * two are one state under two names; see {@link pandastic.studio.models.api.model.Model#isAlive()}.
+     */
     @Override
-    public boolean isAlive() {
+    public boolean isSpawned() {
         return this.alive;
     }
 

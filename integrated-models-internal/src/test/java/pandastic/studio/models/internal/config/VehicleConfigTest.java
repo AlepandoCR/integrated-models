@@ -61,7 +61,54 @@ class VehicleConfigTest {
                 () -> assertEquals(1, snapshot.vehicle().controlPeriodTicks()),
                 () -> assertEquals(4F, snapshot.vehicle().maxStepTicks()),
                 () -> assertEquals(4F, snapshot.vehicle().maxLocalStepBlocks()),
-                () -> assertEquals(0.001F, snapshot.vehicle().restSpeedBlocksPerTick())
+                () -> assertEquals(0.001F, snapshot.vehicle().restSpeedBlocksPerTick()),
+                // The two keys this file holds on the rig loader's behalf: a seat is declared in a rig
+                // file, but what it describes is a vehicle's passenger budget.
+                () -> assertEquals(4, snapshot.seatBounds().maxSeats()),
+                () -> assertEquals(1F, snapshot.seatBounds().maxSeatOffsetBlocks())
+        );
+    }
+
+    @Test
+    void aSeatCeilingBelowOneIsRefused() {
+        // A ceiling of zero does not limit a vehicle rig, it makes every vehicle rig on the server
+        // unrideable - and the symptom is a rig that loads with its seats quietly dropped.
+        final ConfigMapper.Result result = mapVehicle(new VehicleSettings() {
+            @Override
+            public int maxSeats() {
+                return 0;
+            }
+        });
+
+        assertAll(
+                () -> assertFalse(result.isSuccess()),
+                () -> assertTrue(complainsAbout(result, "maxSeats"),
+                        () -> result.diagnostics().toString())
+        );
+    }
+
+    @Test
+    void aNegativeRiderOffsetCeilingIsRefusedButZeroIsNot() {
+        // Zero is a meaningful configuration rather than a disabled feature: riders sit exactly on the
+        // locator the rigger placed, which is where a well-placed locator already is.
+        final ConfigMapper.Result negative = mapVehicle(new VehicleSettings() {
+            @Override
+            public float maxSeatOffsetBlocks() {
+                return -1F;
+            }
+        });
+        final ConfigMapper.Result exact = mapVehicle(new VehicleSettings() {
+            @Override
+            public float maxSeatOffsetBlocks() {
+                return 0F;
+            }
+        });
+
+        assertAll(
+                () -> assertTrue(complainsAbout(negative, "maxSeatOffsetBlocks"),
+                        () -> negative.diagnostics().toString()),
+                () -> assertTrue(exact.isSuccess(), () -> exact.diagnostics().toString()),
+                () -> assertEquals(0F, exact.snapshotOrThrow().seatBounds().maxSeatOffsetBlocks())
         );
     }
 

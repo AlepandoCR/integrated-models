@@ -2,10 +2,13 @@ package pandastic.studio.models.api.decoration;
 
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import pandastic.studio.models.api.binding.RiggedModel;
+import pandastic.studio.models.api.model.Model;
 
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -18,11 +21,12 @@ import java.util.UUID;
  * field. Three hundred of these are meant to be free, and on a resting decoration they are: a settled
  * decoration emits no packets at all, for as long as nothing moves it.
  *
- * <p>It is a subinterface of {@link RiggedModel} rather than a separate hierarchy because the lifecycle
- * is genuinely the same one — bind, spawn once, despawn once, idempotently, from any thread — and a
- * plugin holding a mixed collection of models should not have to know which kind each is to shut them
- * down. What it adds is the three things an entity would otherwise have provided: a position somebody
- * has to set, a viewer list somebody has to manage, and a reason to move.
+ * <p>It is a subinterface of {@link RiggedModel} — and therefore of {@link Model} — rather than a
+ * separate hierarchy because the lifecycle is genuinely the same one: bind, spawn once, despawn once,
+ * idempotently, from any thread. A plugin holding a mixed collection of models should not have to know
+ * which kind each one is to shut them down, show them to a player or ask what rig they drive. What this
+ * interface adds is the three things an entity would otherwise have provided: a position somebody has to
+ * set, a viewer list somebody has to manage, and a reason to move.
  *
  * <h2>Invisible until somebody is shown it</h2>
  * An entity-backed model inherits the server's own view tracking. A decoration has none, so it starts
@@ -51,6 +55,17 @@ import java.util.UUID;
  * </ul>
  */
 public interface Decoration extends RiggedModel {
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Always empty: a decoration is precisely the kind of model with nothing underneath it, which is
+     * what makes it cheap. {@link #getPlacement()} is where its position comes from instead.
+     */
+    @Override
+    default @NotNull Optional<Entity> getEntity() {
+        return Optional.empty();
+    }
 
     /**
      * The world this decoration stands in, fixed for its whole life.

@@ -1,11 +1,12 @@
 package pandastic.studio.models.api.vehicle;
 
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
-import pandastic.studio.models.api.rig.Rig;
+import pandastic.studio.models.api.model.Model;
 
+import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 
 /**
  * One modelled vehicle: the handle a downstream plugin holds onto.
@@ -52,21 +53,26 @@ import java.util.UUID;
  * caches a transformer per bone against a tracker, and a handle that could be revived would have to
  * decide what those point at after the tracker is gone. Every answer to that is a vehicle that looks
  * alive and renders nowhere.
+ *
+ * <h2>It is a {@link Model}</h2>
+ * Identity, name, rig, spawned state, {@code despawn}/{@code close}, viewers and the appearance surface
+ * are that interface's, so a plugin holding a mixed collection of this plugin's models can shut a vehicle
+ * down and ask what it is without knowing it is a vehicle. What this subinterface adds is everything
+ * about <em>driving</em>: the profile, the state, the steering and the rider.
  */
-public interface Vehicle extends AutoCloseable {
+public interface Vehicle extends Model {
 
     /**
-     * This vehicle's identity, stable across its whole life.
+     * {@inheritDoc}
      *
-     * <p>Not the root entity's UUID. The root entity is an implementation choice this interface does not
-     * expose, and two vehicles sharing one root is a shape the layer below permits.
-     *
-     * @return the identifier
+     * <p>Always empty on a vehicle, deliberately. The root entity is an implementation choice this
+     * interface does not expose — a caller that could reach it could mount a rider on it directly, which
+     * is precisely the thing {@link VehicleBinder#create} refuses in order to stay authoritative.
      */
-    @NotNull UUID getUniqueIdentifier();
-
-    /** The rig driving this vehicle's visual. */
-    @NotNull Rig getRig();
+    @Override
+    default @NotNull Optional<Entity> getEntity() {
+        return Optional.empty();
+    }
 
     /** How this vehicle drives. Fixed for its life; create another to change it. */
     @NotNull VehicleProfile getProfile();
@@ -92,43 +98,161 @@ public interface Vehicle extends AutoCloseable {
     @NotNull VehicleSteering getSteering();
 
     /**
-     * Who is riding, if anybody.
+     * Who is <strong>driving</strong>, if anybody.
      *
-     * <p>Empty rather than stale when the rider dismounted, disconnected or was removed: the control
-     * loop re-checks the passenger each step, so nothing about the answer depends on an event having
-     * been delivered.
+     * <p>The rider in the seat the rig declared as the driver's, which is the one whose input steers.
+     * Empty when that seat is free, when the rig declares none, and when its locator did not resolve —
+     * so a vehicle can be full of passengers and answer empty here, which is the right answer for a
+     * question whose subject is who is steering. {@link #getRiders()} is everybody.
      *
-     * @return the rider, or empty
+     * <p>Empty rather than stale when the driver dismounted, disconnected or was removed: the control
+     * loop re-checks every seat each step, so nothing about the answer depends on an event having been
+     * delivered. Nobody is promoted into the empty seat; see {@link #board(Player)}.
+     *
+     * @return the driver, or empty
      */
     @NotNull Optional<Player> getRider();
 
     /**
-     * Seats {@code rider}.
+     * Every seat this vehicle's rig declares, indexed, with the driver's first.
+     *
+     * <p>Fixed for the vehicle's life and safe from any thread: it is derived from the rig, which does
+     * not change. Which of these seats anybody can actually sit on is {@link #getSeating()}'s question,
+     * because that depends on the live model.
+     *
+     * @return the plan
+     */
+    @NotNull SeatPlan getSeatPlan();
+
+    /**
+     * Who is in which seat, right now.
+     *
+     * <p>A snapshot, published whole by the thread that seats people, and safe to read from any thread.
+     * Reading it twice can straddle two steps, so a caller asking more than one question should take one
+     * occupancy and use it — the same rule {@link #getState()} has.
+     *
+     * @return the current occupancy
+     */
+    @NotNull SeatOccupancy getSeating();
+
+    /** Everybody aboard, in seat index order — so the driver first, when there is one. */
+    default @NotNull List<Player> getRiders() {
+        return getSeating().riders();
+    }
+
+    /** What this vehicle says to its riders. The consumer's, supplied at creation. */
+    @NotNull VehicleMessages getMessages();
+
+    /** What each seat's inputs do beyond steering. The consumer's, supplied at creation. */
+    @NotNull VehicleControls getControls();
+
+    /**
+     * Seats {@code rider} in the lowest free seat.
+     *
+     * <p>The boolean form of {@link #board(Player)}, kept because it is the question most callers have.
+     * Everything the richer form says about the boarding rule, the notifications and the driver's seat
+     * applies unchanged.
      *
      * <p>Must run on the thread that owns the root entity; see the class documentation.
      *
      * @param rider who to seat
-     * @return {@code true} if the rider is now aboard; {@code false} if somebody else already is, if
-     *         this vehicle is not alive, or if the platform refused the mount — which it does for a
-     *         cross-region mount, and which is a race a caller cannot avoid rather than a mistake it made
-     * @throws IllegalStateException if called from a thread that does not own the root entity
+     * @return {@code true} if the rider is now aboard
+     * @throws IllegalStateException if called from a thread that does not own the root entity, or if
+     *                               seating them in the driver's seat would hand the vehicle's movement
+     *                               to their client
      */
     boolean mount(@NotNull Player rider);
 
     /**
-     * Puts the current rider back on the ground.
+     * Seats {@code rider} in the lowest free seat, and says what happened.
+     *
+     * <h2>The boarding rule</h2>
+     * The <strong>lowest free index</strong>, where free means usable and empty. Since the driver's seat
+     * is {@link SeatPlan#DRIVER_INDEX}, the first player to board drives, the second takes index 1 — the
+     * second seat — and so on until every usable seat is taken.
+     *
+     * <p>Full is a normal outcome: the rider is told, through this vehicle's own
+     * {@link VehicleNotice#VEHICLE_FULL} message, and {@link BoardingOutcome#VEHICLE_FULL} comes back.
+     * It is neither a silent {@code false} nor an exception.
+     *
+     * <h2>What happens when the driver leaves and passengers stay</h2>
+     * <strong>Nothing is promoted.</strong> The driver's seat empties, the vehicle coasts to a stop and
+     * carries its passengers undriven, and the next player to board takes the driver's seat — because
+     * boarding fills the lowest free index and that is now the lowest free index.
+     *
+     * <p>Three reasons, and the first is about the player rather than the code. Promotion would put
+     * somebody in control of a moving vehicle without their asking, and the one thing it cannot do is
+     * ask them. It would also have to move them between seats mid-step, which means releasing one
+     * carrier and spawning another and re-asking the authority question about the new seat — a question
+     * whose answer can be "no", at which point a passenger who was riding happily has been thrown off.
+     * And it would break what a seat index is for: a consumer who wired seat 2 to aim a weapon would
+     * find that rider steering instead, with no event to react to.
+     *
+     * <p>A consumer that <em>wants</em> promotion has it in one call and in the open:
+     * {@code vehicle.board(passenger, SeatPlan.DRIVER_INDEX)} after
+     * {@link #dismount(Player)}. Deliberately two steps, because each of them is a thing the plugin
+     * should mean.
+     *
+     * <p>Must run on the thread that owns the root entity.
+     *
+     * @param rider who to seat
+     * @return what happened, and which seat when it worked
+     * @throws IllegalStateException if called from a thread that does not own the root entity, or if
+     *                               seating them in the driver's seat would hand the vehicle's movement
+     *                               to their client — the authority refusal, which is a bug in the
+     *                               caller's choice of entity type rather than a condition of the world
+     */
+    @NotNull BoardingResult board(@NotNull Player rider);
+
+    /**
+     * Seats {@code rider} in one particular seat.
+     *
+     * <p>For a menu, a command or a consumer that knows which seat it means. Unlike
+     * {@link #board(Player)} this never falls back to another seat: an occupied one answers
+     * {@link BoardingOutcome#SEAT_TAKEN} and an index no seat has answers
+     * {@link BoardingOutcome#NO_SUCH_SEAT}, both with the configured message.
+     *
+     * <p>Must run on the thread that owns the root entity.
+     *
+     * @param rider     who to seat
+     * @param seatIndex the seat's index, as {@link #getSeatPlan()} numbers them
+     * @return what happened
+     * @throws IllegalStateException if called from a thread that does not own the root entity, or if the
+     *                               seat is the driver's and their client would be the authority
+     */
+    @NotNull BoardingResult board(@NotNull Player rider, int seatIndex);
+
+    /**
+     * Puts every rider back on the ground.
      *
      * <p>Must run on the thread that owns the root entity. Note that a rider can also leave without this
      * being called at all: holding sneak dismounts through the server's own path, and the control loop
-     * notices on its next step.
+     * notices on its next step and sends {@link VehicleNotice#DISMOUNTED} then.
      *
-     * @return whether there was a rider to remove
+     * @return whether there was anybody to remove
      * @throws IllegalStateException if called from a thread that does not own the root entity
      */
     boolean dismount();
 
-    /** Whether this vehicle is being controlled and rendered. */
-    boolean isAlive();
+    /**
+     * Puts one rider back on the ground, leaving everybody else aboard.
+     *
+     * <p>Must run on the thread that owns the root entity.
+     *
+     * @param rider who to put down
+     * @return whether they were in one of this vehicle's seats
+     * @throws IllegalStateException if called from a thread that does not own the root entity
+     */
+    boolean dismount(@NotNull Player rider);
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>On a vehicle, "spawned" is "being controlled and rendered". {@link #isAlive()} is the name the
+     * vehicle layer's own documentation uses for it and answers the same question.
+     */
+    @Override
+    boolean isSpawned();
 
     /**
      * Stops the control loop, puts any rider down and releases the visual.
@@ -137,16 +261,6 @@ public interface Vehicle extends AutoCloseable {
      * caller supplied it, so the caller owns its lifetime — a vehicle despawned at shutdown should leave
      * behind an entity that can be picked up again on the next start.
      */
-    void despawn();
-
-    /**
-     * {@link #despawn()}, so a vehicle can be managed with try-with-resources.
-     *
-     * <p>Declared without the checked exception {@link AutoCloseable} permits: nothing about releasing a
-     * vehicle can fail in a way a caller could handle.
-     */
     @Override
-    default void close() {
-        despawn();
-    }
+    void despawn();
 }

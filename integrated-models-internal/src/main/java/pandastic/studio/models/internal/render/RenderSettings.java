@@ -1,5 +1,9 @@
 package pandastic.studio.models.internal.render;
 
+import org.jetbrains.annotations.NotNull;
+
+import java.util.Objects;
+
 /**
  * Everything the render layer reads out of configuration, as one immutable snapshot.
  *
@@ -12,9 +16,11 @@ package pandastic.studio.models.internal.render;
  * and reject its child — which is the one combination the propagation exists to make impossible.
  * Reading one snapshot and using it for the whole pass removes the window instead of narrowing it.
  *
- * <p>Both fields are deliberately operator-facing. Neither has a default here: a default would be the
+ * <p>Every field is deliberately operator-facing. None has a default here: a default would be the
  * hardcoded value this type exists to remove, and a render layer that silently fell back to one would
- * hide a missing configuration key behind a model that merely looks slightly wrong.
+ * hide a missing configuration key behind a model that merely looks slightly wrong. That is also why
+ * adding a field to this record is a compile error at every construction site rather than a quietly
+ * inherited value, and why it is left that way.
  *
  * @param dirtyEpsilonRadians     angular change below which a bone counts as unmoved. This is the
  *                                bandwidth lever: at zero every bone whose angles differ at all is
@@ -29,10 +35,20 @@ package pandastic.studio.models.internal.render;
  *                                against a log that names the bone they are looking for: a console with
  *                                a short scrollback wants a handful, and somebody debugging a 256-bone
  *                                model against a file wants all of them
+ * @param animationOwnership      what the emission path does with a bone one of the model's own clips
+ *                                already keyframes. Operator-facing because the three answers are
+ *                                different trade-offs rather than degrees of one, and which is wanted
+ *                                depends on the models installed — see {@link AnimationOwnership},
+ *                                which documents the two-writer defect this setting resolves
  */
-public record RenderSettings(float dirtyEpsilonRadians, int diagnosticBoneNameLimit) {
+public record RenderSettings(
+        float dirtyEpsilonRadians,
+        int diagnosticBoneNameLimit,
+        @NotNull AnimationOwnership animationOwnership
+) {
 
     public RenderSettings {
+        Objects.requireNonNull(animationOwnership, "animationOwnership");
         if (!Float.isFinite(dirtyEpsilonRadians) || dirtyEpsilonRadians < 0F) {
             // Zero is legitimate and documented — it means "emit every change" — but a negative or NaN
             // threshold makes every comparison in the tracker answer "unchanged", so a model would

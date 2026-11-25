@@ -18,10 +18,12 @@ class VehicleSettingsTest {
         // scheduled value the same number.
         assertAll(
                 () -> assertTrue(assertThrows(IllegalArgumentException.class,
-                        () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 0L, 6F, 2F, 0.05F))
+                        () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 0L, 6F, 2F, 0.05F,
+                        VehicleFixtures.seatSettings()))
                         .getMessage().contains("controlPeriodTicks")),
                 () -> assertThrows(IllegalArgumentException.class,
-                        () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, -1L, 6F, 2F, 0.05F))
+                        () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, -1L, 6F, 2F, 0.05F,
+                        VehicleFixtures.seatSettings()))
         );
     }
 
@@ -31,7 +33,8 @@ class VehicleSettingsTest {
         // every vehicle on the server covers less ground than its profile says — silently, with nothing
         // wrong except the speed.
         assertTrue(assertThrows(IllegalArgumentException.class,
-                () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 4L, 2F, 2F, 0.05F))
+                () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 4L, 2F, 2F, 0.05F,
+                        VehicleFixtures.seatSettings()))
                 .getMessage().contains("maxStepTicks"));
     }
 
@@ -40,19 +43,22 @@ class VehicleSettingsTest {
         // The boundary is legal: a server that never stalls integrates exactly its own period, so
         // equality is the tightest honest clamp rather than an off-by-one.
         assertEquals(3F,
-                new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 3L, 3F, 2F, 0.05F).maxStepTicks());
+                new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 3L, 3F, 2F, 0.05F,
+                        VehicleFixtures.seatSettings()).maxStepTicks());
     }
 
     @Test
     void theThresholdsHaveToBePositive() {
         assertAll(
                 () -> assertThrows(IllegalArgumentException.class,
-                        () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 1L, 6F, 0F, 0.05F)),
+                        () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 1L, 6F, 0F, 0.05F,
+                        VehicleFixtures.seatSettings())),
                 () -> assertThrows(IllegalArgumentException.class,
-                        () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 1L, 6F, 2F, 0F)),
+                        () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 1L, 6F, 2F, 0F,
+                        VehicleFixtures.seatSettings())),
                 () -> assertThrows(IllegalArgumentException.class,
-                        () -> new VehicleSettings(
-                                VehicleFixtures.VEHICLE_BOUNDS, 1L, 6F, 2F, Float.NaN))
+                        () -> new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 1L, 6F, 2F,
+                                Float.NaN, VehicleFixtures.seatSettings()))
         );
     }
 

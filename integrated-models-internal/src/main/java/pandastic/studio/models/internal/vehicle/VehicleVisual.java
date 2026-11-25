@@ -60,6 +60,22 @@ public interface VehicleVisual {
     boolean isAlive();
 
     /**
+     * The locators of the spawned model, which is where this vehicle's seats are.
+     *
+     * <p>Asked once, by {@link VehicleImpl#start()} and <strong>after</strong> {@link #spawn()}: a locator
+     * is an element of a live model, so before the model stands in the world there is nothing to resolve
+     * against. Owning thread only, for the same reason.
+     *
+     * <p>Here rather than on {@link VehicleHost} because the locators belong to the <em>model</em> and
+     * the host knows only about the entity. A vehicle that carries no model therefore answers
+     * {@link SeatLocators#NONE} by default, and its declared seats resolve to nothing — which is a
+     * reported outcome and not a failure; see {@link SeatChartReport}.
+     */
+    default @NotNull SeatLocators locators() {
+        return SeatLocators.NONE;
+    }
+
+    /**
      * A vehicle with no model on it.
      *
      * <p>Not a test double: a vehicle whose root entity is itself the thing the player sees — a cart

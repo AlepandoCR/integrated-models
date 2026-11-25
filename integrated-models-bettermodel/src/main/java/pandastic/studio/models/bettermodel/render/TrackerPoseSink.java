@@ -1,4 +1,4 @@
-package pandastic.studio.models.internal.render;
+package pandastic.studio.models.bettermodel.render;
 
 import kr.toxicity.model.api.bone.RenderedBone;
 import kr.toxicity.model.api.data.renderer.ModelRenderer;
@@ -15,6 +15,15 @@ import org.joml.Vector3f;
 import pandastic.studio.models.api.pose.Pose;
 import pandastic.studio.models.api.render.PoseSink;
 import pandastic.studio.models.api.rig.Rig;
+import pandastic.studio.models.bettermodel.model.BetterModelSkeletons;
+import pandastic.studio.models.internal.render.AnimatedRotationSource;
+import pandastic.studio.models.internal.render.AnimatedRotations;
+import pandastic.studio.models.internal.render.AnimationOwnership;
+import pandastic.studio.models.internal.render.BoneDirtyTracker;
+import pandastic.studio.models.internal.render.ModelSkeleton;
+import pandastic.studio.models.internal.render.RenderSettings;
+import pandastic.studio.models.internal.render.RenderSettingsSource;
+import pandastic.studio.models.internal.render.RigBindPose;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -73,8 +82,36 @@ import java.util.concurrent.locks.ReentrantLock;
  * <h2>It shares the display with the renderer's animation pass</h2>
  * Our transformer is a second writer to the same display, with its own dirty-tracking state that knows
  * nothing about what BetterModel's own transformer last sent. For a bone the renderer is not animating
- * — the only kind a physics rig should name — we are the sole writer and this is exact. For a bone an
- * animation is also driving, the two writers race and the last one in the frame wins.
+ * — the only kind a physics rig should name — we are the sole writer and this is exact.
+ *
+ * <p>For a bone one of the model's own clips <em>does</em> drive, the two writers used to disagree
+ * outright: the renderer sent {@code bind ∘ animation} every frame a keyframe advanced and this class
+ * sent {@code bind ∘ pose}, composed against {@link RigBindPose}'s <strong>static</strong> rest pose, so
+ * the display alternated between the two in the rhythm of the emission rate. That is the whole reason
+ * movement looked clean on {@code krampus} — the one model in this repository that ships no animations at
+ * all — and dirty on every model that ships five to eight clips keyframing essentially every bone with
+ * geometry.
+ *
+ * <p>What happens now is {@linkplain AnimationOwnership configuration}, read with the rest of the
+ * snapshot once per emission:
+ *
+ * <ul>
+ *   <li>{@link AnimationOwnership#RENDERER} — the default. An {@code animation-owned} bone is passed to
+ *       the dirty tracker, so its children still resolve correctly, and then <em>not staged</em>. One
+ *       writer per bone, no race, and the authored clip plays exactly as the rigger made it.</li>
+ *   <li>{@link AnimationOwnership#COMPOSE} — {@link TrackerAnimatedRotations} reads the clip's live local
+ *       rotation and {@link RigBindPose#compose(Pose, AnimatedRotations)} folds it in underneath the
+ *       pose, so our packet carries {@code bind ∘ animation ∘ pose}. The two writers now agree about
+ *       the animation and differ only by our own secondary motion, which is what this plugin is for.</li>
+ *   <li>{@link AnimationOwnership#OVERRIDE} — the old behaviour, by name, for a rig tuned against it.</li>
+ * </ul>
+ *
+ * <p>Two consequences of {@code COMPOSE} worth knowing before choosing it. The composed animation is the
+ * value sampled when {@link #accept} ran, so it is up to one renderer frame stale by the time the drain
+ * sends it — bounded at 25 ms and invisible next to the interpolation window, but not zero. And a
+ * simulation that reaches rest stops calling {@code accept} at all, which is <em>correct</em> here rather
+ * than a freeze: with our pose settled to zero our packet and the renderer's are the same transform, so
+ * going silent simply leaves the bone to the writer that is still sending it every frame.
  *
  * <h2>Threading</h2>
  * {@link #accept} may run on any thread and the frame handler runs on a renderer worker, so the staging
@@ -120,6 +157,17 @@ public final class TrackerPoseSink implements PoseSink {
     private final @NotNull RigBindPose bindPose;
     private final @NotNull RenderSettingsSource settings;
     private final DisplayTransformer[] transformers;
+
+    /**
+     * Where the clip's current contribution is read from, and the buffer it is read into.
+     *
+     * <p>Both are inert for a rig that declares no {@code animation-owned} bone: the source is
+     * {@link AnimatedRotationSource#NONE} and the overlay is {@link AnimatedRotations#NONE}, whose
+     * {@code hasDelta} answers {@code false} for every index. Which is what keeps a decorative rig — and
+     * every rig of a model with no clips in it — on exactly the arithmetic it ran before this existed.
+     */
+    private final @NotNull AnimatedRotationSource animationSource;
+    private final @NotNull AnimatedRotations animated;
     /** BetterModel applies this after the model transform; keep the same player passenger offset. */
     private final @NotNull Vector3f defaultPosition;
 
@@ -166,6 +214,7 @@ public final class TrackerPoseSink implements PoseSink {
             @NotNull Rig rig,
             @NotNull RigBindPose bindPose,
             DisplayTransformer[] transformers,
+            @NotNull AnimatedRotationSource animationSource,
             @NotNull RenderSettingsSource settings,
             @NotNull RenderSettings initial,
             @NotNull Vector3f defaultPosition,
@@ -179,6 +228,8 @@ public final class TrackerPoseSink implements PoseSink {
         this.defaultPosition = new Vector3f(defaultPosition);
         this.dirty = BoneDirtyTracker.of(rig, initial);
         this.transformers = transformers;
+        this.animationSource = animationSource;
+        this.animated = AnimatedRotations.of(rig);
         this.scales = new float[bones * VECTOR_COMPONENTS];
         this.stagedRotation = new float[bones * QUATERNION_COMPONENTS];
         this.stagedPosition = new float[bones * VECTOR_COMPONENTS];
@@ -224,9 +275,11 @@ public final class TrackerPoseSink implements PoseSink {
         }
 
         // Resolve the geometry first: its failure message carries the model's bone list, which is what
-        // a rigger actually needs when a name stopped matching.
-        final RigBindPose bindPose =
-                ModelSkeleton.of(renderer).bindPose(rig, modelScaleOf(tracker, rig), initial);
+        // a rigger actually needs when a name stopped matching. Read from the live tracker's own
+        // renderer rather than looked up by id, because this is the model that is actually bound.
+        final RigBindPose bindPose = ModelSkeleton
+                .of(renderer.name(), BetterModelSkeletons.bonesOf(renderer))
+                .bindPose(rig, modelScaleOf(tracker, rig), initial);
 
         final int bones = rig.boneCount();
         final DisplayTransformer[] transformers = new DisplayTransformer[bones];
@@ -265,13 +318,18 @@ public final class TrackerPoseSink implements PoseSink {
         }
         final TrackerPoseSink sink =
                 new TrackerPoseSink(
-                        rig, bindPose, transformers, settings, initial,
+                        rig, bindPose, transformers,
+                        // Resolved here rather than lazily: it reads the same bones the loop above just
+                        // resolved, so a name that has gone stale is already a bind failure by now.
+                        TrackerAnimatedRotations.of(rig, tracker),
+                        settings, initial,
                         entityTracker.sourceEntity().passengerPosition(new Vector3f()).mul(-1F),
                         entityTracker.sourceEntity(), rig.indexOf("head").orElse(-1));
         tracker.frame((liveTracker, bundlerSet) -> {
-            // BetterModel's automatic walk animation writes the same limb rotations as the gait stage.
-            // Stop it immediately before packet assembly so the rig remains the sole limb writer.
-            liveTracker.stopAnimation("walk");
+            // Do not stop BetterModel's built-in walk animation here. It is the fallback for entity
+            // rigs whose limb names cannot be derived into custom locomotion. A custom sink that did
+            // stage a pose runs afterward and overwrites the same bones; the sink is therefore the
+            // final writer, while a rig without derived locomotion still receives entity walking.
             sink.drain(liveTracker, bundlerSet);
         });
         return sink;
@@ -309,16 +367,59 @@ public final class TrackerPoseSink implements PoseSink {
 
         // One read, before the pass. Everything below judges every bone against this snapshot.
         final RenderSettings settings = this.settings.current();
+        final AnimationOwnership ownership = settings.animationOwnership();
 
-        this.bindPose.compose(pose);
+        // Sampled and composed outside the lock, which is where the composition always was: the bind
+        // pose and the overlay belong to this pass alone, and the source reaches into the renderer's own
+        // per-bone lock — holding ours across that would couple two lock orders for nothing.
+        final boolean composing =
+                ownership == AnimationOwnership.COMPOSE && !this.animated.isEmpty();
+        if (composing) {
+            // Cleared by the caller, filled by the source, exactly as AnimatedRotationSource documents:
+            // a bone the source could not read must come back as "no delta" rather than as last pass's.
+            this.animated.clear();
+            this.animationSource.sample(this.animated);
+            this.bindPose.compose(pose, this.animated);
+        } else {
+            this.bindPose.compose(pose);
+        }
 
         this.lock.lock();
         try {
             retune(settings);
             for (int bone = 0; bone < this.staged.length; bone++) {
+                // The dirty tracker judges a bone's own local rotation, so under COMPOSE it has to see
+                // the animation as well: a bone whose clip is moving while our pose holds still has a
+                // changed absolute transform, and judging the pose alone would freeze it at whatever the
+                // clip was doing when the pose last moved. The branch costs nothing when nothing is
+                // animating, because hasDelta is false for a delta of exact zeroes — so the no-clip case
+                // evaluates the identical expression it always did.
+                final float pitch;
+                final float yaw;
+                final float roll;
+                if (composing && this.animated.hasDelta(bone)) {
+                    pitch = pose.pitch(bone) + this.animated.pitch(bone);
+                    yaw = pose.yaw(bone) + this.animated.yaw(bone);
+                    roll = pose.roll(bone) + this.animated.roll(bone);
+                } else {
+                    pitch = pose.pitch(bone);
+                    yaw = pose.yaw(bone);
+                    roll = pose.roll(bone);
+                }
+
                 // Must be called for every bone, in order: the tracker resolves "my parent moved, so my
-                // absolute transform changed even though my own angles did not" in this one pass.
-                if (!this.dirty.admit(bone, pose.pitch(bone), pose.yaw(bone), pose.roll(bone))) {
+                // absolute transform changed even though my own angles did not" in this one pass. That
+                // includes a bone we are about to decline to stage — its rig children are still ours to
+                // write, and they moved.
+                if (!this.dirty.admit(bone, pitch, yaw, roll)) {
+                    continue;
+                }
+
+                if (ownership == AnimationOwnership.RENDERER && this.animated.isOwned(bone)) {
+                    // Computed and discarded, deliberately and unconditionally. See AnimationOwnership
+                    // for why this is not gated on whether a clip is currently playing: a bone handed
+                    // back and forth between two writers whenever a clip ends is the same race in slower
+                    // motion.
                     continue;
                 }
 

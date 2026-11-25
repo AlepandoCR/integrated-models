@@ -1,10 +1,13 @@
 package pandastic.studio.models.internal.vehicle;
 
+import org.bukkit.entity.Entity;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import pandastic.studio.models.api.binding.RiggedModel;
 import pandastic.studio.models.api.rig.Rig;
 
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -26,7 +29,7 @@ class RiggedVehicleVisualTest {
     @Test
     void theLifecycleIsPassedStraightThrough() {
         final RecordingModel model = new RecordingModel();
-        final RiggedVehicleVisual visual = new RiggedVehicleVisual(model);
+        final RiggedVehicleVisual visual = new RiggedVehicleVisual(model, SeatLocatorSource.NONE);
 
         assertAll(
                 () -> assertFalse(visual.isAlive()),
@@ -46,7 +49,7 @@ class RiggedVehicleVisualTest {
     void aDespawnedModelRefusesToSpawnAgainAndTheVisualCarriesThatRefusal() {
         // The whole reason the adapter exists rather than a pair of method references.
         final RecordingModel model = new RecordingModel();
-        final RiggedVehicleVisual visual = new RiggedVehicleVisual(model);
+        final RiggedVehicleVisual visual = new RiggedVehicleVisual(model, SeatLocatorSource.NONE);
         visual.spawn();
         visual.despawn();
 
@@ -54,11 +57,54 @@ class RiggedVehicleVisualTest {
                 "a spent handle must not come back alive with transformers pointing at a dead tracker");
     }
 
+    @Test
+    void theSeatLocatorsAreAskedForByEntityAndModelId() {
+        // Keyed on what is actually rendered rather than on a handle this plugin holds, which is what
+        // makes a vehicle whose visual somebody else spawned seatable.
+        final Entity root = StubEntity.plain();
+        final RecordingModel model = new RecordingModel().on(root);
+        final FakeSeatLocators locators = VehicleFixtures.locators();
+        final String[] asked = {null, null};
+        final RiggedVehicleVisual visual = new RiggedVehicleVisual(model, (entity, modelId) -> {
+            asked[0] = entity == root ? "root" : "somebody else";
+            asked[1] = modelId;
+            return locators;
+        });
+
+        assertAll(
+                () -> assertSame(locators, visual.locators()),
+                () -> assertEquals("root", asked[0]),
+                () -> assertEquals(model.getRig().getModelId(), asked[1])
+        );
+    }
+
+    @Test
+    void aModelWithNoEntityHasNoLocatorsRatherThanAFailure() {
+        // A legal shape of a rigged model, impossible for a vehicle, and answering NONE keeps the seat
+        // chart the one place it is reported.
+        final RiggedVehicleVisual visual = new RiggedVehicleVisual(
+                new RecordingModel(), (entity, modelId) -> VehicleFixtures.locators());
+
+        assertSame(SeatLocators.NONE, visual.locators());
+    }
+
     /** A rigged model that remembers its own lifecycle, which is all this adapter touches. */
     private static final class RecordingModel implements RiggedModel {
 
         private final @NotNull Rig rig = VehicleFixtures.rig();
         private final @NotNull UUID id = UUID.randomUUID();
+
+        private @Nullable Entity entity;
+
+        private @NotNull RecordingModel on(@NotNull Entity root) {
+            this.entity = root;
+            return this;
+        }
+
+        @Override
+        public @NotNull Optional<Entity> getEntity() {
+            return Optional.ofNullable(this.entity);
+        }
 
         private boolean alive;
         private boolean spent;
@@ -94,7 +140,7 @@ class RiggedVehicleVisualTest {
         }
 
         @Override
-        public boolean isAlive() {
+        public boolean isSpawned() {
             return this.alive;
         }
     }

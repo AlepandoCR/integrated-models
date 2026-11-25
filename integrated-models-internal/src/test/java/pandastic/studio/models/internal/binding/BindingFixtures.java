@@ -15,6 +15,7 @@ import pandastic.studio.models.api.rig.ProfileDefaults;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.rig.RigBounds;
 import pandastic.studio.models.internal.physics.AngularPhysicsSolver;
+import pandastic.studio.models.internal.render.AnimationOwnership;
 import pandastic.studio.models.internal.render.RenderSettings;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
 import pandastic.studio.models.internal.sim.SimulationSettings;
@@ -55,7 +56,7 @@ final class BindingFixtures {
     static final BindingBounds BINDING_BOUNDS =
             new BindingBounds(1.0E-3F, 16F, 0.1F, 8F, 2F);
 
-    static final RenderSettings RENDER_SETTINGS = new RenderSettings(1.0E-4F, 8);
+    static final RenderSettings RENDER_SETTINGS = new RenderSettings(1.0E-4F, 8, AnimationOwnership.RENDERER);
 
     /**
      * The shipped gait calibration. {@link GaitTuning.Builder} carries no defaults on purpose, so all

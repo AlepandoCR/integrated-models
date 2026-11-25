@@ -6,6 +6,7 @@ import pandastic.studio.models.api.physics.DriverBounds;
 import pandastic.studio.models.api.rig.PhysicsKind;
 import pandastic.studio.models.api.rig.PhysicsProfile;
 import pandastic.studio.models.api.rig.Rig;
+import pandastic.studio.models.internal.model.ModelManagerImpl;
 import pandastic.studio.models.internal.sim.SimulationLogger;
 import pandastic.studio.models.internal.sim.SimulationLoop;
 import pandastic.studio.models.internal.sim.SimulationScheduler;
@@ -30,6 +31,9 @@ class ModelBinderImplTest {
     private final BindingFixtures.MutableBindingSource bindingSource =
             new BindingFixtures.MutableBindingSource(BindingFixtures.SAMPLE_PERIOD_TICKS);
 
+    /** The published registry, which a bind has to fill and a teardown has to empty. */
+    private final ModelManagerImpl registry = new ModelManagerImpl();
+
     /** A binder whose offline check runs against a model with the bones {@code modelBoneNames} has. */
     private ModelBinderImpl binder(List<String> modelBoneNames) {
         return new ModelBinderImpl(
@@ -40,7 +44,8 @@ class ModelBinderImplTest {
                 BindingFixtures.simulationSource(),
                 this.bindingSource,
                 RigBindValidator.over(modelBoneNames, BindingFixtures.renderSource()),
-                LocomotionStageSource.NONE);
+                LocomotionStageSource.NONE,
+                this.registry);
     }
 
     private ModelBinderImpl binder() {
@@ -204,6 +209,52 @@ class ModelBinderImplTest {
 
         assertEquals(0, binder.size(),
                 "whichever side notices the anchor is gone, the registry has to hear about it");
+    }
+
+    @Test
+    void aBoundModelIsPublishedInTheModelManagerUntilItStops() {
+        final ModelBinderImpl binder = binder();
+        final RiggedModelImpl model = binder.bind(BindingFixtures.rig(), new FakeAnchor(this.journal));
+
+        // The published registry, not the binder's own list: this is the half that used to be a lie —
+        // nothing ever called addModel, so getModelManager() answered an empty collection forever.
+        assertAll(
+                () -> assertEquals(1, this.registry.size()),
+                () -> assertSame(model,
+                        this.registry.getModel(model.getUniqueIdentifier()).orElseThrow()),
+                () -> assertTrue(this.registry.getModels().contains(model)));
+
+        model.despawn();
+
+        assertAll(
+                () -> assertEquals(0, this.registry.size()),
+                () -> assertTrue(this.registry.getModel(model.getUniqueIdentifier()).isEmpty()));
+    }
+
+    @Test
+    void aModelTheOfflineCheckRejectedIsNeverPublished() {
+        final ModelBinderImpl binder = binder();
+        final Rig rig = Rig.builder("broken", "test-model",
+                        BindingFixtures.RIG_BOUNDS, BindingFixtures.PROFILE_BOUNDS)
+                .root("nonexistent")
+                .build();
+
+        assertThrows(IllegalStateException.class, () -> binder.bind(rig, new FakeAnchor(this.journal)));
+
+        assertEquals(0, this.registry.size(),
+                "a handle that was never handed out is not a model this plugin has in the world");
+    }
+
+    @Test
+    void despawnAllEmptiesThePublishedRegistryToo() {
+        final ModelBinderImpl binder = binder();
+        binder.bind(BindingFixtures.rig(), new FakeAnchor(this.journal));
+        binder.bind(BindingFixtures.rig(), new FakeAnchor(this.journal));
+
+        binder.despawnAll();
+
+        assertEquals(0, this.registry.size(),
+                "a shutdown that left the registry full would name models that no longer exist");
     }
 
     @Test

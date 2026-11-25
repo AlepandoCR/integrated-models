@@ -51,7 +51,7 @@ import java.util.function.Supplier;
  * dirty-tracking slot per bone, at every bind, to move nothing.
  *
  * <p>The argument is that <strong>every named bone is another way for the bind to fail</strong>.
- * {@code TrackerPoseSink.bind} refuses a rig if any bone is missing, if any bone name matches two model
+ * The rendering backend's live bind refuses a rig if any bone is missing, if any bone name matches two model
  * bones, or if any bone has no display — and a group with no cubes in it, which is what a pivot or an
  * empty root is, has no display. Both conditions are ordinary in hand-made models. A whole-model
  * derivation would therefore turn "render this model, no physics" into a hard failure for models the

@@ -50,7 +50,10 @@ public enum ConfigFile {
     BINDING("binding.yml"),
 
     /** Every line the reload command says back to whoever typed it. */
-    COMMAND("command.yml");
+    COMMAND("command.yml"),
+
+    /** How a player's keys and clicks are observed, judged and reported. */
+    INPUT("input.yml");
 
     private final @NotNull String fileName;
 

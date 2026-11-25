@@ -2,6 +2,7 @@ package pandastic.studio.models.internal.menu;
 
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
+import pandastic.studio.models.internal.spi.ModelRenderBackends;
 
 import java.util.Optional;
 
@@ -103,15 +104,15 @@ public interface WardrobeRendering {
     boolean stop(@NotNull Player viewer, @NotNull String modelId, @NotNull String animationId);
 
     /**
-     * The production rendering: BetterModel's own tracker registry.
+     * The production rendering: the installed rendering backend's own registry of what is on an entity.
      *
-     * <p>A factory rather than a constructor so that the one class in this package holding the renderer's
-     * tracker imports is package-private and is never named, and therefore never loaded, by anything that
-     * only wants the seam.
+     * <p>A factory rather than a constructor so that no class in this package names an implementation.
+     * The implementation lives in the backend module and is reached by
+     * {@link java.util.ServiceLoader}, so nothing here can be loaded into a test by accident.
      *
      * @return the rendering over the installed renderer
      */
     static @NotNull WardrobeRendering trackers() {
-        return new TrackerWardrobeRendering();
+        return ModelRenderBackends.require().wardrobe();
     }
 }

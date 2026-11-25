@@ -5,6 +5,7 @@ import pandastic.studio.models.api.rig.ProfileBounds;
 import pandastic.studio.models.api.rig.ProfileDefaults;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.rig.RigBounds;
+import pandastic.studio.models.api.rig.SeatBounds;
 import pandastic.studio.models.internal.physics.AngularPhysicsSolver;
 
 /**
@@ -45,6 +46,12 @@ import pandastic.studio.models.internal.physics.AngularPhysicsSolver;
  *                             rate the ceiling is quoted at
  * @param rigBounds            the structural limits every loaded rig is built within, including the bone
  *                             ceiling the loader trims to
+ * @param seatBounds           the limits a vehicle rig's seats are accepted within: how many there may be
+ *                             and how far a rider may be offset from their locator. Needed by every load
+ *                             rather than only by vehicle rigs, because which kind a file declares is not
+ *                             known until it has been read — and the loader clamps a bad offset where
+ *                             {@link Rig.Builder} would throw, so it has to hold the same bounds the
+ *                             builder will validate against
  * @param profileBounds        the ranges every coefficient is clamped into. They must admit
  *                             {@link #profileDefaults()}, since the loader reads those back as the
  *                             fall-back for a value a file omits — which this record enforces rather
@@ -68,6 +75,7 @@ import pandastic.studio.models.internal.physics.AngularPhysicsSolver;
 public record RigLoadSettings(
         @NotNull AngularPhysicsSolver solver,
         @NotNull RigBounds rigBounds,
+        @NotNull SeatBounds seatBounds,
         @NotNull ProfileBounds profileBounds,
         @NotNull ProfileDefaults profileDefaults,
         float stabilityMargin,

@@ -41,16 +41,20 @@ final class FakeVehicleHost implements VehicleHost {
     private boolean alive = true;
     private boolean localMove = true;
     private boolean clientSteered;
-    private boolean refuseMount;
     private boolean refuseSubmit;
     private boolean refuseSchedule;
+    private boolean refuseCarrier;
+    private boolean carrierClientSteered;
+    private boolean carrierRefusesMount;
+    private boolean carrierLocalMove = true;
+    private boolean ejected;
 
     private double x;
     private double y;
     private double z;
     private float yaw;
 
-    private @Nullable Player rider;
+    private final @NotNull List<FakeSeatCarrier> carriers = new ArrayList<>();
     private @NotNull RiderIntent intent = RiderIntent.NONE;
 
     private @Nullable Runnable body;
@@ -154,26 +158,36 @@ final class FakeVehicleHost implements VehicleHost {
     }
 
     @Override
-    public @Nullable Player rider() {
-        return this.rider;
-    }
-
-    @Override
-    public boolean mount(@NotNull Player newRider) {
-        if (this.refuseMount) {
-            return false;
+    public @Nullable SeatCarrier spawnCarrier(
+            @NotNull String entityTypeName,
+            double atX,
+            double atY,
+            double atZ,
+            float yawDegrees
+    ) {
+        if (this.refuseCarrier) {
+            // What an unrecognised carrier type and a refused spawn both look like from above: no
+            // carrier, and therefore a seat nobody can occupy.
+            return null;
         }
-        this.rider = newRider;
-        this.journal.add("mount");
-        return true;
+        final FakeSeatCarrier carrier = new FakeSeatCarrier(
+                this.journal, "carrier" + this.carriers.size(), atX, atY, atZ, yawDegrees);
+        carrier.clientSteered(this.carrierClientSteered)
+                .refuseMount(this.carrierRefusesMount)
+                .localMove(this.carrierLocalMove);
+        this.carriers.add(carrier);
+        this.journal.add("carrier.spawn:" + entityTypeName);
+        return carrier;
     }
 
     @Override
     public boolean dismount() {
-        final boolean had = this.rider != null;
-        this.rider = null;
+        // Nobody ever rides the root — riders sit on locators through carriers — so this only ever
+        // reports that there was nothing to eject. It is still called on teardown, and the journal line
+        // is what proves the order.
+        this.ejected = true;
         this.journal.add("dismount");
-        return had;
+        return false;
     }
 
     @Override
@@ -256,9 +270,47 @@ final class FakeVehicleHost implements VehicleHost {
         return this;
     }
 
-    FakeVehicleHost refuseMount(boolean value) {
-        this.refuseMount = value;
+    /** Makes every carrier spawn fail, as an unrecognised or refused carrier type does. */
+    FakeVehicleHost refuseCarrier(boolean value) {
+        this.refuseCarrier = value;
         return this;
+    }
+
+    /** Makes every carrier spawned from now on report the rider's client as authoritative. */
+    FakeVehicleHost carrierClientSteered(boolean value) {
+        this.carrierClientSteered = value;
+        return this;
+    }
+
+    /** Makes every carrier refuse its mount, as the platform does across a region boundary. */
+    FakeVehicleHost carrierRefusesMount(boolean value) {
+        this.carrierRefusesMount = value;
+        return this;
+    }
+
+    /** Makes every carrier spawned from now on have no in-place move, as a server with no adapter. */
+    FakeVehicleHost carrierLocalMove(boolean value) {
+        this.carrierLocalMove = value;
+        return this;
+    }
+
+    /** Every carrier this host spawned, in the order they were spawned. */
+    @NotNull List<FakeSeatCarrier> carriers() {
+        return List.copyOf(this.carriers);
+    }
+
+    /** The one carrier, for the common case of a vehicle with a single rider. */
+    @NotNull FakeSeatCarrier onlyCarrier() {
+        if (this.carriers.size() != 1) {
+            throw new IllegalStateException("Expected exactly one carrier but there are "
+                    + this.carriers.size());
+        }
+        return this.carriers.getFirst();
+    }
+
+    /** Whether the root's own eject was called, which teardown does defensively. */
+    boolean wasEjected() {
+        return this.ejected;
     }
 
     FakeVehicleHost refuseSubmit(boolean value) {
@@ -282,11 +334,6 @@ final class FakeVehicleHost implements VehicleHost {
     FakeVehicleHost holding(@NotNull RiderIntent newIntent) {
         this.intent = newIntent;
         return this;
-    }
-
-    /** Puts somebody in the seat without going through the vehicle, as the server's own path can. */
-    void seat(@Nullable Player newRider) {
-        this.rider = newRider;
     }
 
     double x() {
@@ -315,6 +362,19 @@ final class FakeVehicleHost implements VehicleHost {
 
     @NotNull List<String> journal() {
         return List.copyOf(this.journal);
+    }
+
+    /**
+     * The journal with the carriers' own lines filtered out.
+     *
+     * <p>For the assertions that are about what was written to the <em>root</em> entity and in which
+     * order. A seated vehicle moves its carriers in the same step it moves its root, so an exact-sequence
+     * assertion about the root would otherwise have to restate the seating layer's behaviour — and would
+     * then fail for the wrong reason every time a seat rule changed. The seat tests assert on the full
+     * journal, which is where the interleaving belongs.
+     */
+    @NotNull List<String> rootJournal() {
+        return this.journal.stream().filter(line -> !line.startsWith("carrier")).toList();
     }
 
     /**

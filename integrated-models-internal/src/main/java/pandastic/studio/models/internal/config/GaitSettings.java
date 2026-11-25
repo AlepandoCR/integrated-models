@@ -569,4 +569,104 @@ public interface GaitSettings {
     default float maxScale() {
         return 2F;
     }
+
+    /**
+     * Whether a rig that names its model's own clips has them driven from its owner's speed.
+     *
+     * <p>On by default, because a hand-authored walk cycle is better than the synthesised one above it
+     * — every cosmetic constant in this file was chosen rather than measured. Off is for a server that
+     * wants the synthesised gait anyway, and for working out which of the two writers is moving a bone.
+     *
+     * <p>A model whose rig names no clips is unaffected either way: there is nothing to drive.
+     *
+     * @return whether clip driving is active
+     * @see pandastic.studio.models.internal.sim.ClipStage
+     */
+    @ConfigValue(comment = "Whether a rig that names its model's own animation clips has them played from its owner's speed, instead of relying on the synthesised walk cycle. A model whose rig names no clips is unaffected.")
+    default boolean clipDrivingEnabled() {
+        return true;
+    }
+
+    /**
+     * Horizontal speed, in blocks per tick, at or above which the walk clip plays.
+     *
+     * <p>Above zero rather than at it, and by a margin: collision resolution nudges a standing entity
+     * by a few thousandths of a block per tick, and a standing model that keeps starting its walk is
+     * the single most visible failure this threshold exists to prevent. An order of magnitude under
+     * walking pace, so a model that is genuinely walking is never mistaken for a standing one.
+     *
+     * @return the walk threshold, in blocks per tick
+     */
+    @ConfigValue(comment = "Horizontal speed in blocks per tick at or above which the walk clip plays. Above zero by a margin: collision resolution nudges a standing entity, and a standing model that keeps restarting its walk is the failure this prevents.")
+    default float clipWalkSpeedBlocksPerTick() {
+        return 0.02F;
+    }
+
+    /**
+     * Horizontal speed, in blocks per tick, at or above which the run clip plays.
+     *
+     * <p>Just under vanilla sprinting pace (0.28), so a sprinting owner reaches it and a walking one
+     * (0.21) does not. Must sit strictly above {@link #clipWalkSpeedBlocksPerTick()}, or there is no
+     * speed at which the walk clip plays at all.
+     *
+     * @return the run threshold, in blocks per tick
+     */
+    @ConfigValue(comment = "Horizontal speed in blocks per tick at or above which the run clip plays. Just under vanilla sprinting pace, so a sprinting owner reaches it and a walking one does not. Must sit strictly above clipWalkSpeedBlocksPerTick.")
+    default float clipRunSpeedBlocksPerTick() {
+        return 0.25F;
+    }
+
+    /**
+     * How far past a threshold the speed must go to enter a faster state, and how far back to leave it.
+     *
+     * <p>The anti-flap band, and the reason a bare threshold is not enough: an owner moving at almost
+     * exactly walking pace crosses one several times a second, and a clip restarted several times a
+     * second reads as a model twitching rather than walking. The band is twice this wide, so no single
+     * speed sits on both sides of it.
+     *
+     * @return the hysteresis margin, in blocks per tick
+     */
+    @ConfigValue(comment = "How much further past a clip threshold the speed must go to enter a faster state than to stay in it, in blocks per tick. The anti-flap band is twice this wide. Zero disables it, which makes a clip restart whenever the speed hovers on a threshold.")
+    default float clipSpeedHysteresisBlocksPerTick() {
+        return 0.01F;
+    }
+
+    /**
+     * How long a chosen clip state is held before another may replace it, in seconds.
+     *
+     * <p>The second half of the anti-flap guard, and the one that covers a speed oscillating by more
+     * than the hysteresis band — a stutter-stepping player, a mob pathing around a corner, an owner
+     * being knocked back. The cost is that a genuine transition can be this late, which is why it is
+     * configuration: the right figure is a function of how long the authored clips are.
+     *
+     * @return the minimum hold, in seconds
+     */
+    @ConfigValue(comment = "Seconds a chosen clip state is held before another may replace it. Covers a speed that oscillates by more than the hysteresis band. The cost is that a genuine transition can be this late.")
+    default float clipMinimumHoldSeconds() {
+        return 0.3F;
+    }
+
+    /**
+     * Ticks the renderer blends into a clip over.
+     *
+     * <p>Zero snaps, which is right for a clip whose first frame already matches the rest pose and
+     * wrong for everything else. Three ticks is short enough not to read as a delay and long enough to
+     * hide the discontinuity between two authored cycles.
+     *
+     * @return the blend-in duration, in ticks
+     */
+    @ConfigValue(comment = "Ticks the renderer blends into a clip over when the locomotion state changes. Zero snaps.")
+    default int clipBlendInTicks() {
+        return 3;
+    }
+
+    /**
+     * Ticks the renderer blends out of a clip over.
+     *
+     * @return the blend-out duration, in ticks
+     */
+    @ConfigValue(comment = "Ticks the renderer blends out of a clip over when the locomotion state changes. Zero snaps.")
+    default int clipBlendOutTicks() {
+        return 3;
+    }
 }

@@ -3,6 +3,7 @@ package pandastic.studio.models.internal.rig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import pandastic.studio.models.api.rig.AxisLimits;
+import pandastic.studio.models.api.rig.ClipRole;
 import pandastic.studio.models.api.rig.PhysicsKind;
 import pandastic.studio.models.api.rig.PhysicsProfile;
 import pandastic.studio.models.api.rig.ProfileBounds;
@@ -10,6 +11,9 @@ import pandastic.studio.models.api.rig.ProfileDefaults;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.rig.RigBone;
 import pandastic.studio.models.api.rig.RigBounds;
+import pandastic.studio.models.api.rig.RigKind;
+import pandastic.studio.models.api.rig.RigSeat;
+import pandastic.studio.models.api.rig.SeatBounds;
 import pandastic.studio.models.internal.physics.AngularPhysicsSolver;
 import pandastic.studio.models.internal.rig.RigDiagnostic.Severity;
 
@@ -21,6 +25,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -162,6 +167,20 @@ class RigLoaderTest {
                 () -> assertEquals("banner", rig.getModelId()),
                 () -> assertEquals(5, rig.boneCount()),
                 () -> assertEquals(4, rig.physicsBoneCount()),
+                // The example documents the whole format, so it has to exercise the whole format:
+                // a kind, the clips, the animation-owned flag and a seats section with a driver.
+                () -> assertEquals(RigKind.VEHICLE, rig.kind()),
+                () -> assertEquals("idle", rig.clips().clip(ClipRole.IDLE)),
+                () -> assertEquals("walk", rig.clips().clip(ClipRole.WALK)),
+                () -> assertFalse(rig.clips().declares(ClipRole.RUN),
+                        "the example leaves run commented out, to document that a role may be omitted"),
+                () -> assertTrue(rig.bone(0).animationOwned()),
+                () -> assertEquals(1, rig.animationOwnedBoneCount()),
+                () -> assertEquals(2, rig.seatCount()),
+                () -> assertEquals("seat_driver", rig.driverSeat().orElseThrow().locator()),
+                () -> assertEquals("seat_driver", rig.driverSeat().orElseThrow().name(),
+                        "a seat with no 'name' is named after its locator"),
+                () -> assertEquals(0.1F, rig.findSeat("bench_left").orElseThrow().offsetY(), EPSILON),
                 () -> assertEquals(
                         Set.of("pole", "tail", "antenna", "cloth_left", "cloak"),
                         result.expectedBoneNames()),
@@ -1097,7 +1116,8 @@ class RigLoaderTest {
                     physics:
                       kind: pendulum
                 """, new RigLoadSettings(RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS,
-                        RigFixtures.PROFILE_BOUNDS, ODD_DEFAULTS, 0.99F, 1.0E-4F));
+                        RigFixtures.SEAT_BOUNDS, RigFixtures.PROFILE_BOUNDS, ODD_DEFAULTS,
+                        0.99F, 1.0E-4F));
 
         final PhysicsProfile hair = hairPhysics(result);
         // The api normalises the reach, so what the file inherits is the configured direction.
@@ -1145,7 +1165,8 @@ class RigLoaderTest {
                     physics:
                       kind: drag
                 """, new RigLoadSettings(RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS,
-                        RigFixtures.PROFILE_BOUNDS, ODD_DEFAULTS, 0.99F, 1.0E-4F));
+                        RigFixtures.SEAT_BOUNDS, RigFixtures.PROFILE_BOUNDS, ODD_DEFAULTS,
+                        0.99F, 1.0E-4F));
 
         final Rig rig = result.rigOrThrow();
         assertAll(
@@ -1170,6 +1191,7 @@ class RigLoaderTest {
         // problem forty times.
         final IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                 () -> new RigLoadSettings(RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS,
+                        RigFixtures.SEAT_BOUNDS,
                         new ProfileBounds(0.5F, 1.5F, 4F, 4F, 2F, 1.7F, 45F),
                         ODD_DEFAULTS, 0.99F, 1.0E-4F));
         assertTrue(refused.getMessage().contains("mass"),
@@ -1196,8 +1218,9 @@ class RigLoaderTest {
                       gravity: 3
                       wind: 3
                       collision-radius: 1.5
-                """, new RigLoadSettings(RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, narrow,
-                        RigFixtures.PROFILE_DEFAULTS, 0.99F, 1.0E-4F));
+                """, new RigLoadSettings(RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS,
+                        RigFixtures.SEAT_BOUNDS, narrow, RigFixtures.PROFILE_DEFAULTS,
+                        0.99F, 1.0E-4F));
 
         final PhysicsProfile hair = hairPhysics(result);
         assertAll(
@@ -1216,7 +1239,8 @@ class RigLoaderTest {
     @Test
     void dropsBonesPastTheConfiguredCeilingAndQuotesIt() {
         final RigLoadSettings tiny = new RigLoadSettings(
-                RigFixtures.SOLVER, new RigBounds(3), RigFixtures.PROFILE_BOUNDS,
+                RigFixtures.SOLVER, new RigBounds(3), RigFixtures.SEAT_BOUNDS,
+                RigFixtures.PROFILE_BOUNDS,
                 RigFixtures.PROFILE_DEFAULTS, 0.99F, 1.0E-4F);
         final RigLoadResult result = load("""
                 name: chain
@@ -1276,7 +1300,8 @@ class RigLoaderTest {
     @Test
     void placesAClampedDampingAtTheConfiguredMargin() {
         final RigLoadSettings halfway = new RigLoadSettings(
-                RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.PROFILE_BOUNDS,
+                RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.SEAT_BOUNDS,
+                RigFixtures.PROFILE_BOUNDS,
                 RigFixtures.PROFILE_DEFAULTS, 0.5F, 1.0E-4F);
         final RigLoadResult result = load("""
                 name: doll
@@ -1304,7 +1329,8 @@ class RigLoaderTest {
         // right direction. So the discriminator is a short vector pointing somewhere the default does
         // not — kept, it gives reachX 1; refused, it falls back to the default's reachY of -1.
         final RigLoadSettings coarse = new RigLoadSettings(
-                RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.PROFILE_BOUNDS,
+                RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.SEAT_BOUNDS,
+                RigFixtures.PROFILE_BOUNDS,
                 RigFixtures.PROFILE_DEFAULTS, 0.99F, 1F);
         final String physics = """
                 kind: pendulum
@@ -1336,15 +1362,505 @@ class RigLoaderTest {
                 // A margin of 1 lands the clamp exactly on an exclusive bound, so the solver refuses
                 // the rig the loader just reported it had made safe.
                 () -> assertThrows(IllegalArgumentException.class, () -> new RigLoadSettings(
-                        RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.PROFILE_BOUNDS,
+                        RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.SEAT_BOUNDS,
+                        RigFixtures.PROFILE_BOUNDS,
                         RigFixtures.PROFILE_DEFAULTS, 1F, 1.0E-4F)),
                 () -> assertThrows(IllegalArgumentException.class, () -> new RigLoadSettings(
-                        RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.PROFILE_BOUNDS,
+                        RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.SEAT_BOUNDS,
+                        RigFixtures.PROFILE_BOUNDS,
                         RigFixtures.PROFILE_DEFAULTS, 0F, 1.0E-4F)),
                 () -> assertThrows(IllegalArgumentException.class, () -> new RigLoadSettings(
-                        RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.PROFILE_BOUNDS,
+                        RigFixtures.SOLVER, RigFixtures.RIG_BOUNDS, RigFixtures.SEAT_BOUNDS,
+                        RigFixtures.PROFILE_BOUNDS,
                         RigFixtures.PROFILE_DEFAULTS, 0.99F, 0F)),
                 () -> assertEquals(60, RigFixtures.SETTINGS.substepRateHz(),
                         "the rate is read off the solver, never carried as a copy that could diverge"));
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // kind
+    // ------------------------------------------------------------------------------------------
+
+    @Test
+    void readsARigWithNoKindAsACreature() {
+        // The compatibility case, and the reason creature is the default: every rig file written
+        // before the key existed has to keep meaning what it meant, including the seven in this
+        // repository's own rigs/ folder.
+        final RigLoadResult result = load("""
+                name: doll
+                model: doll_model
+                bones:
+                  body: {}
+                """);
+
+        assertAll(
+                () -> assertNoDiagnostics(result),
+                () -> assertEquals(RigKind.CREATURE, result.rigOrThrow().kind()),
+                () -> assertEquals(0, result.rigOrThrow().seatCount()),
+                () -> assertTrue(result.rigOrThrow().clips().isEmpty()),
+                () -> assertFalse(result.rigOrThrow().bone(0).animationOwned()));
+    }
+
+    @Test
+    void acceptsAKindWhateverTheCase() {
+        for (final String spelling : new String[]{"vehicle", "VEHICLE", "Vehicle"}) {
+            final RigLoadResult result = load(
+                    "name: cart\nmodel: cart_model\nkind: " + spelling + "\nbones:\n  chassis: {}\n");
+            assertAll(
+                    () -> assertNoDiagnostics(result),
+                    () -> assertEquals(RigKind.VEHICLE, result.rigOrThrow().kind(),
+                            "'" + spelling + "' should name the vehicle kind"));
+        }
+    }
+
+    @Test
+    void refusesARigWhoseKindNothingRecognises() {
+        // Hard, like an unknown arm-swing-axis and unlike almost everything else here. The kind gates
+        // whole sections, so falling back after a typo loads a file that means something other than
+        // what it says - and the shape of that mistake is a vehicle whose seats were all discarded.
+        final RigLoadResult result = load("""
+                name: cart
+                model: cart_model
+                kind: vehicel
+                bones:
+                  chassis: {}
+                """);
+
+        assertAll(
+                () -> assertFalse(result.isSuccess()),
+                () -> assertSays(result, Severity.ERROR, "vehicel", "creature, vehicle, decoration"));
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // seats
+    // ------------------------------------------------------------------------------------------
+
+    /** A vehicle rig with {@code seats} spliced in, which is the only kind that may have any. */
+    private static RigLoadResult loadCart(String seatsBlock) {
+        return load("""
+                name: cart
+                model: cart_model
+                kind: vehicle
+                bones:
+                  chassis: {}
+                seats:
+                """ + seatsBlock.indent(2));
+    }
+
+    @Test
+    void readsSeatsInFileOrderWithOneDriver() {
+        final RigLoadResult result = loadCart("""
+                - locator: seat_driver
+                  driver: true
+                - name: bench_left
+                  locator: h_seat_bench_left
+                  offset: [0.25, 0.5, -0.25]
+                """);
+        final Rig rig = result.rigOrThrow();
+        final RigSeat driver = rig.seats().get(0);
+        final RigSeat bench = rig.seats().get(1);
+
+        assertAll(
+                () -> assertNoDiagnostics(result),
+                () -> assertEquals(2, rig.seatCount()),
+                // File order is the order riders are offered seats in, so it is part of what the file
+                // says rather than an implementation detail of whichever map read it.
+                () -> assertEquals("seat_driver", driver.name(),
+                        "a seat with no 'name' is named after its locator"),
+                () -> assertTrue(driver.driver()),
+                () -> assertTrue(driver.isOnLocator()),
+                () -> assertEquals(driver, rig.driverSeat().orElseThrow()),
+                () -> assertEquals("bench_left", bench.name()),
+                // Normalised exactly like a bone name: lower-cased with renderer tag prefixes
+                // stripped, because a locator reaches the bone tree with the same kind of identifier.
+                () -> assertEquals("seat_bench_left", bench.locator()),
+                () -> assertFalse(bench.driver()),
+                () -> assertEquals(0.25F, bench.offsetX(), EPSILON),
+                () -> assertEquals(0.5F, bench.offsetY(), EPSILON),
+                () -> assertEquals(-0.25F, bench.offsetZ(), EPSILON),
+                () -> assertEquals(bench, rig.findSeat("BENCH_LEFT").orElseThrow(),
+                        "a seat name is ours to interpret, so it is matched case-insensitively"));
+    }
+
+    @Test
+    void dropsTheSeatsOfARigThatIsNotAVehicle() {
+        // Soft, and the seats go rather than the rig: the likely mistake is a forgotten
+        // `kind: vehicle`, and reading a creature as a vehicle instead would make it rideable on the
+        // strength of a key the file never wrote.
+        final RigLoadResult result = load("""
+                name: deer
+                model: deer_model
+                bones:
+                  torso: {}
+                seats:
+                  - locator: seat_saddle
+                """);
+
+        assertAll(
+                () -> assertTrue(result.isSuccess(), "the rig itself is still perfectly loadable"),
+                () -> assertEquals(0, result.rigOrThrow().seatCount()),
+                () -> assertSays(result, Severity.WARNING, "'seats'", "creature", "kind: vehicle"));
+    }
+
+    @Test
+    void dropsASeatThatNamesABoneRatherThanALocator() {
+        // The diagnostic this whole section exists for. A seat is a locator - the empty, cube-less
+        // marker a rigger places - and never a bone, because a bone is geometry the model's own
+        // animation pass moves every frame a clip plays. There is deliberately no fallback: a seat
+        // that resolved to a bone would work badly and silently, which is the one outcome worse than
+        // not working.
+        final RigLoadResult result = loadCart("""
+                - locator: chassis
+                """);
+
+        assertAll(
+                () -> assertTrue(result.isSuccess()),
+                () -> assertEquals(0, result.rigOrThrow().seatCount()),
+                () -> assertSays(result, Severity.WARNING, "chassis", "as a bone", "locator"));
+    }
+
+    @Test
+    void dropsASeatWithNoLocator() {
+        final RigLoadResult result = loadCart("""
+                - name: nowhere
+                  driver: true
+                """);
+
+        assertAll(
+                () -> assertEquals(0, result.rigOrThrow().seatCount()),
+                () -> assertSays(result, Severity.WARNING, "no 'locator'"));
+    }
+
+    @Test
+    void readsASecondDriversSeatAsAPassengerSeat() {
+        // Demoted rather than dropped: a vehicle takes its input from one rider, which is no reason to
+        // lose a place to sit. The warning names the seat that keeps the wheel.
+        final RigLoadResult result = loadCart("""
+                - locator: seat_front
+                  driver: true
+                - locator: seat_back
+                  driver: 'true'
+                """);
+        final Rig rig = result.rigOrThrow();
+
+        assertAll(
+                () -> assertEquals(2, rig.seatCount()),
+                () -> assertEquals("seat_front", rig.driverSeat().orElseThrow().name()),
+                () -> assertFalse(rig.seats().get(1).driver()),
+                () -> assertSays(result, Severity.WARNING, "seat_back", "seat_front", "one rider"));
+    }
+
+    @Test
+    void dropsASecondSeatWithTheSameName() {
+        final RigLoadResult result = loadCart("""
+                - name: bench
+                  locator: seat_left
+                - name: BENCH
+                  locator: seat_right
+                """);
+
+        assertAll(
+                () -> assertEquals(1, result.rigOrThrow().seatCount()),
+                () -> assertEquals("seat_left", result.rigOrThrow().seats().get(0).locator(),
+                        "the first declaration is the one a consumer would have got"),
+                () -> assertSays(result, Severity.WARNING, "'bench' twice"));
+    }
+
+    @Test
+    void clampsARiderOffsetToTheConfiguredCeiling() {
+        // Clamped like any coefficient, and against the operator's figure rather than a stock one: the
+        // ceiling is small on purpose, because a seat IS its locator and the offset only trims it.
+        final RigLoadResult result = load("""
+                name: cart
+                model: cart_model
+                kind: vehicle
+                bones:
+                  chassis: {}
+                seats:
+                  - locator: seat_driver
+                    offset: [0.0, 4.0, 0.0]
+                """, RigFixtures.settings(new SeatBounds(4, 0.25F)));
+
+        assertAll(
+                () -> assertEquals(0.25F, result.rigOrThrow().seats().get(0).offsetY(), EPSILON),
+                () -> assertSays(result, Severity.WARNING, "+/-0.25", "clamped to 0.25"));
+    }
+
+    @Test
+    void seatsTheRiderOnTheLocatorWhenTheOffsetIsUnreadable() {
+        final RigLoadResult result = loadCart("""
+                - locator: seat_driver
+                  offset: [0.0, 0.5]
+                """);
+
+        assertAll(
+                () -> assertTrue(result.rigOrThrow().seats().get(0).isOnLocator()),
+                () -> assertSays(result, Severity.WARNING, "'offset'", "[x, y, z]"));
+    }
+
+    @Test
+    void dropsSeatsPastTheConfiguredCeiling() {
+        // From the end, because the end is the last riders would have been offered.
+        final RigLoadResult result = load("""
+                name: cart
+                model: cart_model
+                kind: vehicle
+                bones:
+                  chassis: {}
+                seats:
+                  - locator: seat_a
+                  - locator: seat_b
+                """, RigFixtures.settings(new SeatBounds(1, 1F)));
+
+        assertAll(
+                () -> assertEquals(1, result.rigOrThrow().seatCount()),
+                () -> assertEquals("seat_a", result.rigOrThrow().seats().get(0).locator()),
+                () -> assertSays(result, Severity.WARNING, "seat_b", "1-seat ceiling"));
+    }
+
+    @Test
+    void reportsASeatsSectionThatIsNotAList() {
+        // A mapping would load and would order its seats by whatever the parser felt like, which is
+        // exactly what the list form exists to stop.
+        final RigLoadResult result = load("""
+                name: cart
+                model: cart_model
+                kind: vehicle
+                bones:
+                  chassis: {}
+                seats:
+                  driver:
+                    locator: seat_driver
+                """);
+
+        assertAll(
+                () -> assertTrue(result.isSuccess()),
+                () -> assertEquals(0, result.rigOrThrow().seatCount()),
+                () -> assertSays(result, Severity.WARNING, "'seats'", "list", "file order"));
+    }
+
+    @Test
+    void reportsAnUnknownKeyInASeatsEntry() {
+        final RigLoadResult result = loadCart("""
+                - locator: seat_driver
+                  pasenger: true
+                """);
+
+        assertAll(
+                () -> assertEquals(1, result.rigOrThrow().seatCount()),
+                // The known-key list is quoted back in the author's own spelling, because a warning
+                // that lists canonical forms helps nobody.
+                () -> assertSays(result, Severity.WARNING, "'pasenger'",
+                        "name, locator, driver, offset"));
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // clips, and the animation-owned flag
+    // ------------------------------------------------------------------------------------------
+
+    @Test
+    void bindsTheModelsOwnClipsToLocomotionStatesAndKeepsTheirSpellingExactly() {
+        // The one place in this format where a name is NOT lower-cased. A clip name is looked up
+        // inside a .bbmodel this plugin does not own, and the models in this repository ship clips
+        // called standUp and lookaround - normalising would name a clip the model does not have.
+        final RigLoadResult result = load("""
+                name: squirrel
+                model: squirrel_model
+                clips:
+                  idle: idle
+                  walk: walk
+                  run: standUp
+                bones:
+                  body: {}
+                """);
+        final Rig rig = result.rigOrThrow();
+
+        assertAll(
+                () -> assertNoDiagnostics(result),
+                () -> assertEquals("idle", rig.clips().clip(ClipRole.IDLE)),
+                () -> assertEquals("walk", rig.clips().clip(ClipRole.WALK)),
+                () -> assertEquals("standUp", rig.clips().clip(ClipRole.RUN),
+                        "the rigger's capitals are the renderer's lookup key"),
+                () -> assertEquals(3, rig.clips().size()));
+    }
+
+    @Test
+    void bindsOnlyTheStatesTheFileNames() {
+        final RigLoadResult result = load("""
+                name: banner
+                model: banner_model
+                clips:
+                  idle: sway
+                bones:
+                  pole: {}
+                """);
+
+        assertAll(
+                () -> assertNoDiagnostics(result),
+                () -> assertEquals("sway", result.rigOrThrow().clips().clip(ClipRole.IDLE)),
+                () -> assertFalse(result.rigOrThrow().clips().declares(ClipRole.WALK),
+                        "a model with no walk cycle binds no walk clip"),
+                () -> assertFalse(result.rigOrThrow().clips().declares(ClipRole.RUN)));
+    }
+
+    @Test
+    void reportsAClipRoleNothingCanBeIn() {
+        // A state the pipeline cannot tell it is in is a clip that could never be chosen, so the key
+        // is as inert as a misspelled coefficient - and as quiet, without this.
+        final RigLoadResult result = load("""
+                name: doll
+                model: doll_model
+                clips:
+                  sprint: running
+                bones:
+                  body: {}
+                """);
+
+        assertAll(
+                () -> assertTrue(result.isSuccess()),
+                () -> assertTrue(result.rigOrThrow().clips().isEmpty()),
+                () -> assertSays(result, Severity.WARNING, "'sprint'", "idle, walk, run"));
+    }
+
+    @Test
+    void reportsAClipsBlockThatIsNotAMapping() {
+        final RigLoadResult result = load("""
+                name: doll
+                model: doll_model
+                clips: idle
+                bones:
+                  body: {}
+                """);
+
+        assertAll(
+                () -> assertTrue(result.rigOrThrow().clips().isEmpty()),
+                () -> assertSays(result, Severity.WARNING, "'clips'", "idle, walk, run"));
+    }
+
+    @Test
+    void reportsABlankClipName() {
+        final RigLoadResult result = load("""
+                name: doll
+                model: doll_model
+                clips:
+                  idle: '   '
+                bones:
+                  body: {}
+                """);
+
+        assertAll(
+                () -> assertFalse(result.rigOrThrow().clips().declares(ClipRole.IDLE)),
+                () -> assertSays(result, Severity.WARNING, "blank", "'idle'"));
+    }
+
+    @Test
+    void readsTheAnimationOwnedFlagHoweverItIsSpelled() {
+        for (final String spelling : new String[]{"animation-owned", "animation_owned", "animationOwned"}) {
+            final RigLoadResult result = load("""
+                    name: deer
+                    model: deer_model
+                    bones:
+                      torso:
+                    """ + ("  " + spelling + ": true").indent(4));
+            final Rig rig = result.rigOrThrow();
+
+            assertAll(
+                    () -> assertNoDiagnostics(result),
+                    () -> assertTrue(rig.bone(0).animationOwned(),
+                            "'" + spelling + "' should set the flag"),
+                    () -> assertArrayEquals(new int[]{0}, rig.animationOwnedBoneIndices()));
+        }
+    }
+
+    @Test
+    void warnsWhenABoneIsBothAnimationOwnedAndSimulated() {
+        // The defect the flag exists to make visible: both layers write the same display, the
+        // renderer sending bind-composed-with-animation and this plugin bind-composed-with-physics,
+        // and the last packet of the frame wins. Legal, because a rigger may know the two move the
+        // bone on different axes - but never silent, because the symptom is a flickering bone and
+        // nothing about it points at the rig file.
+        final RigLoadResult result = load("""
+                name: deer
+                model: deer_model
+                bones:
+                  torso: {}
+                  tail:
+                    parent: torso
+                    animation-owned: true
+                    physics:
+                      kind: pendulum
+                """);
+        final Rig rig = result.rigOrThrow();
+
+        assertAll(
+                () -> assertTrue(result.isSuccess()),
+                () -> assertTrue(rig.bone(1).animationOwned()),
+                () -> assertNotNull(rig.bone(1).physics(), "the physics is kept, not quietly dropped"),
+                () -> assertSays(result, Severity.WARNING, "bone 'tail'", "pendulum physics",
+                        "animation-owned"));
+    }
+
+    @Test
+    void readsAnUnreadableAnimationOwnedFlagAsFalse() {
+        final RigLoadResult result = load("""
+                name: deer
+                model: deer_model
+                bones:
+                  torso:
+                    animation-owned: maybe
+                """);
+
+        assertAll(
+                () -> assertFalse(result.rigOrThrow().bone(0).animationOwned()),
+                () -> assertSays(result, Severity.WARNING, "'animation-owned'", "true or false"));
+    }
+
+    @Test
+    void loadsARigWrittenBeforeAnyOfTheseSectionsExisted() {
+        // The regression guard for the rigs this repository already ships: the same shape as
+        // rigs/deer.yml, which must keep loading with exactly as many diagnostics as it did before
+        // kinds, seats and clips existed - none.
+        final RigLoadResult result = load("""
+                name: deer
+                model: deer
+                arm-swing-axis: pitch
+                hand-swing-axis: pitch
+
+                bones:
+                  torso: {}
+                  neck:
+                    parent: torso
+                  head:
+                    parent: neck
+                    physics:
+                      kind: spring
+                      stiffness: 0.14
+                      damping: 0.05
+                      mass: 1.8
+                      wind: 0.25
+                      limits:
+                        pitch: [-12, 12]
+                        yaw: [-16, 16]
+                        roll: [-10, 10]
+                  leftleg:
+                    parent: torso
+                  leftleg_low:
+                    parent: leftleg
+                    physics:
+                      kind: drag
+                      lag: 0.2
+                      mass: 1.1
+                      wind: 0.2
+                """);
+        final Rig rig = result.rigOrThrow();
+
+        assertAll(
+                () -> assertNoDiagnostics(result),
+                () -> assertEquals(RigKind.CREATURE, rig.kind()),
+                () -> assertEquals(0, rig.seatCount()),
+                () -> assertTrue(rig.clips().isEmpty()),
+                () -> assertEquals(0, rig.animationOwnedBoneCount()),
+                () -> assertEquals(5, rig.boneCount()),
+                () -> assertEquals(2, rig.physicsBoneCount()));
     }
 }

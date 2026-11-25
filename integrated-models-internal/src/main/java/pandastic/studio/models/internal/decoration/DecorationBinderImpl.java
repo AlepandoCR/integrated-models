@@ -6,6 +6,7 @@ import org.jetbrains.annotations.NotNull;
 import pandastic.studio.models.api.decoration.AmbientMotion;
 import pandastic.studio.models.api.decoration.DecorationBinder;
 import pandastic.studio.models.api.decoration.DecorationPlacement;
+import pandastic.studio.models.api.model.ModelManager;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.internal.binding.RigBindValidator;
 import pandastic.studio.models.internal.sim.SimulationLoop;
@@ -60,25 +61,31 @@ public final class DecorationBinderImpl implements DecorationBinder {
      */
     private final @NotNull Set<DecorationImpl> bound = ConcurrentHashMap.newKeySet();
 
+    /** The published registry; see {@code ModelBinderImpl} for why this is not a second copy of the set. */
+    private final @NotNull ModelManager registry;
+
     /**
      * @param anchors            how a world becomes something this layer may stand a model in
      * @param loop               the single off-tick task every decoration's simulation is stepped from
      * @param drivers            the single off-tick task every decoration's driver is published from
      * @param simulationSettings where the solver, the cadence and the teleport thresholds come from
      * @param validator          the offline check {@link #bind} runs; see {@link RigBindValidator}
+     * @param registry           where every decoration this binder hands out is published
      */
     public DecorationBinderImpl(
             @NotNull DecorationAnchorFactory anchors,
             @NotNull SimulationLoop loop,
             @NotNull DecorationDriverLoop drivers,
             @NotNull SimulationSettingsSource simulationSettings,
-            @NotNull RigBindValidator validator
+            @NotNull RigBindValidator validator,
+            @NotNull ModelManager registry
     ) {
         this.anchors = Objects.requireNonNull(anchors, "anchors");
         this.loop = Objects.requireNonNull(loop, "loop");
         this.drivers = Objects.requireNonNull(drivers, "drivers");
         this.simulationSettings = Objects.requireNonNull(simulationSettings, "simulationSettings");
         this.validator = Objects.requireNonNull(validator, "validator");
+        this.registry = Objects.requireNonNull(registry, "registry");
     }
 
     @Override
@@ -136,9 +143,21 @@ public final class DecorationBinderImpl implements DecorationBinder {
 
         final DecorationImpl decoration = new DecorationImpl(
                 rig, anchor, this.loop, this.drivers, this.simulationSettings, placement, ambient,
-                this.bound::remove);
+                this::unregister);
         this.bound.add(decoration);
+        this.registry.addModel(decoration);
         return decoration;
+    }
+
+    /**
+     * Forgets {@code decoration}, from both this layer's shutdown list and the published registry.
+     *
+     * <p>Handed to every decoration as its {@code onStopped} callback, so it runs exactly once per
+     * decoration, on whichever thread noticed it was finished.
+     */
+    private void unregister(@NotNull DecorationImpl decoration) {
+        this.bound.remove(decoration);
+        this.registry.removeModel(decoration);
     }
 
     /** Every decoration currently bound, as a snapshot. */
@@ -172,6 +191,9 @@ public final class DecorationBinderImpl implements DecorationBinder {
             } catch (final RuntimeException | Error ignored) {
                 // Deliberately swallowed; see above.
             }
+            // Belt and braces, and only on this path: a teardown that threw before reaching its own
+            // onStopped callback would otherwise leave the registry naming a decoration that is gone.
+            this.registry.removeModel(decoration);
             despawned++;
         }
         this.bound.clear();

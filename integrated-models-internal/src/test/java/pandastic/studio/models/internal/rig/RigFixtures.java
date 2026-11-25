@@ -4,6 +4,7 @@ import pandastic.studio.models.api.physics.PhysicsTuning;
 import pandastic.studio.models.api.rig.ProfileBounds;
 import pandastic.studio.models.api.rig.ProfileDefaults;
 import pandastic.studio.models.api.rig.RigBounds;
+import pandastic.studio.models.api.rig.SeatBounds;
 import pandastic.studio.models.internal.physics.AngularPhysicsSolver;
 
 /**
@@ -17,6 +18,9 @@ import pandastic.studio.models.internal.physics.AngularPhysicsSolver;
 final class RigFixtures {
 
     static final RigBounds RIG_BOUNDS = new RigBounds(256);
+
+    /** The stock seat budget: a cart's worth of riders, each nudged by at most a block. */
+    static final SeatBounds SEAT_BOUNDS = new SeatBounds(4, 1F);
 
     static final ProfileBounds PROFILE_BOUNDS =
             new ProfileBounds(0.05F, 10F, 4F, 4F, 2F, 1.7F, 45F);
@@ -59,6 +63,12 @@ final class RigFixtures {
     /** Stock settings around {@code solver}, so a test can move the solver and nothing else. */
     static RigLoadSettings settings(AngularPhysicsSolver solver) {
         return new RigLoadSettings(
-                solver, RIG_BOUNDS, PROFILE_BOUNDS, PROFILE_DEFAULTS, 0.99F, 1.0E-4F);
+                solver, RIG_BOUNDS, SEAT_BOUNDS, PROFILE_BOUNDS, PROFILE_DEFAULTS, 0.99F, 1.0E-4F);
+    }
+
+    /** Stock settings around {@code seatBounds}, so a seat test can move the budget and nothing else. */
+    static RigLoadSettings settings(SeatBounds seatBounds) {
+        return new RigLoadSettings(
+                SOLVER, RIG_BOUNDS, seatBounds, PROFILE_BOUNDS, PROFILE_DEFAULTS, 0.99F, 1.0E-4F);
     }
 }

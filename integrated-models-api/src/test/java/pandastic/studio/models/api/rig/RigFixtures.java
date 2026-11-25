@@ -56,4 +56,15 @@ final class RigFixtures {
     static ProfileBounds wideProfileBounds() {
         return new ProfileBounds(0.01F, 100F, 50F, 50F, 20F, 1.7F, 45F);
     }
+
+    /**
+     * Seat limits wide enough that a test about something else never trips them.
+     *
+     * <p>Not the shipped figures — four seats and a block of offset — for the reason
+     * {@link #rigBounds()} is not 256: a test that happens to agree with the configuration cannot tell
+     * a type that reads its bounds from one that carries a copy.
+     */
+    static SeatBounds wideSeatBounds() {
+        return new SeatBounds(6, 2.5F);
+    }
 }

@@ -46,6 +46,13 @@ import java.util.List;
  * holding rather than a simplification: a bone that leaves its pivot detaches from its parent in the
  * renderer, which reads as a broken model rather than as physics.
  *
+ * <p>{@code rest[i]} is the authored orientation, which is exact for a bone nothing else drives and
+ * wrong for a bone one of the model's own clips is driving — the renderer composes the same display
+ * against the animated orientation instead, so the two writers disagree. {@link #compose(Pose,
+ * AnimatedRotations)} is the overload that takes the clip's current contribution and composes against
+ * that as well; see {@link AnimationOwnership} for the defect and {@link AnimatedRotations} for why the
+ * no-clip case stays bit-identical.
+ *
  * <h2>No allocation after construction</h2>
  * Every quaternion and vector this needs is allocated at bind time — one per bone for the rest data and
  * one per bone for the working data. {@link #compose} does arithmetic into those and nothing else, which
@@ -70,6 +77,13 @@ public final class RigBindPose {
     private final Quaternionf[] deviation;
     private final Vector3f[] absolutePosition;
     private final Quaternionf delta = new Quaternionf();
+
+    /**
+     * Scratch for the animation overlay, reached only from {@link #compose} and only for a bone that
+     * actually carries a delta. Allocated here for the same reason everything else is: the emission path
+     * runs at the simulation rate across every model on the server.
+     */
+    private final Quaternionf animation = new Quaternionf();
 
     private RigBindPose(
             @NotNull Rig rig,
@@ -187,6 +201,39 @@ public final class RigBindPose {
      * @throws IllegalArgumentException if the pose was built for a different bone count
      */
     public void compose(@NotNull Pose pose) {
+        compose(pose, AnimatedRotations.NONE);
+    }
+
+    /**
+     * {@link #compose(Pose)} with the renderer's own animation folded in underneath the pose.
+     *
+     * <h2>Where the animation enters, and why there</h2>
+     * The composition becomes
+     *
+     * <pre>
+     *   absolute[i] = D[parent] · rest[i] · animation[i] · delta[i]
+     * </pre>
+     *
+     * with {@code animation[i]} the clip's current deviation from the bone's authored orientation, in the
+     * bone's own frame. It sits <em>between</em> the rest orientation and the pose because that is the
+     * order the two layers actually happen in: the clip moves the bone away from rest and the solver adds
+     * secondary motion to wherever the clip left it. Reversed, the pose would be measured from rest and
+     * the clip would swing the result, which is the same picture only when one of the two is zero.
+     *
+     * <p>{@code D[i]} remains the deviation from <em>rest</em>, so the animation propagates down the
+     * hierarchy exactly as the pose does — a torso the clip turns swings the legs hanging off it, which
+     * is what the renderer's own pass does with the same rotation.
+     *
+     * <h2>Identical to {@link #compose(Pose)} when no clip is running</h2>
+     * Not approximately: a bone with no delta skips the multiply entirely, so the expression evaluated is
+     * character for character the one above without {@code animation[i]} in it. That is the whole reason
+     * {@link AnimatedRotations} carries a delta rather than an orientation — see its class note.
+     *
+     * @param pose     the rig's own pose, as always
+     * @param animated the clip's current contribution per bone, or {@link AnimatedRotations#NONE}
+     * @throws IllegalArgumentException if the pose was built for a different bone count
+     */
+    public void compose(@NotNull Pose pose, @NotNull AnimatedRotations animated) {
         if (pose.boneCount() != boneCount()) {
             throw new IllegalArgumentException(
                     "Pose holds " + pose.boneCount() + " bones but rig '" + this.rig.getName()
@@ -196,6 +243,15 @@ public final class RigBindPose {
         for (int bone = 0; bone < this.parentIndices.length; bone++) {
             final int parent = this.parentIndices[bone];
             PoseQuaternions.fromPose(pose, bone, this.delta);
+
+            if (animated.hasDelta(bone)) {
+                PoseQuaternions.fromEuler(
+                        animated.pitch(bone), animated.yaw(bone), animated.roll(bone), this.animation);
+                // animation · delta, into delta: the pose ends up applied after the clip, in the frame
+                // the clip left the bone in. JOML's three-argument mul writes through locals, so the
+                // destination aliasing the right-hand operand is safe.
+                this.animation.mul(this.delta, this.delta);
+            }
 
             if (parent < 0) {
                 this.absoluteRotation[bone].set(this.restRotation[bone]).mul(this.delta);

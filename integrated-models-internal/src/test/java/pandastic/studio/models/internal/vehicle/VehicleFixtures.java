@@ -4,6 +4,9 @@ import org.jetbrains.annotations.NotNull;
 import pandastic.studio.models.api.rig.ProfileBounds;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.rig.RigBounds;
+import pandastic.studio.models.api.rig.RigKind;
+import pandastic.studio.models.api.rig.RigSeat;
+import pandastic.studio.models.api.rig.SeatBounds;
 import pandastic.studio.models.api.vehicle.ControlScheme;
 import pandastic.studio.models.api.vehicle.VehicleBounds;
 import pandastic.studio.models.api.vehicle.VehicleProfile;
@@ -27,14 +30,67 @@ final class VehicleFixtures {
 
     static final @NotNull VehicleBounds VEHICLE_BOUNDS = new VehicleBounds(2F, 1F, 45F, 4F);
 
+    /** Four seats and a blocks-sized trim, so neither ceiling is the thing a seat test is about. */
+    static final @NotNull SeatBounds SEAT_BOUNDS = new SeatBounds(4, 2F);
+
     private VehicleFixtures() {
     }
 
-    /** A rig with one bone, because nothing in this package looks at the skeleton. */
+    /**
+     * A rig with one bone and one driver's seat on the locator {@code saddle}.
+     *
+     * <p>One seat rather than none, because every test about stepping needs somebody whose input is read
+     * and the driver's seat is where that somebody sits. The locator's name is deliberately not the
+     * bone's: a seat is a locator and a seat naming a bone is the mistake the layer reports rather than
+     * honours, so a fixture that blurred the two would make a passing test meaningless.
+     */
     static @NotNull Rig rig() {
         return Rig.builder("cart", "cart-model", RIG_BOUNDS, PROFILE_BOUNDS)
                 .root("body")
+                .kind(RigKind.VEHICLE)
+                .seatBounds(SEAT_BOUNDS)
+                .seat(RigSeat.of("saddle", "saddle", true))
                 .build();
+    }
+
+    /**
+     * A rig whose four seats cover every outcome a seat can have.
+     *
+     * <p>In file order, which is the order riders are offered them: the driver's seat on a real locator,
+     * a passenger's seat on a real locator with an offset, a seat naming a <em>bone</em> — the rigger's
+     * mistake — and a seat naming something the model does not carry at all. Three of the four states
+     * matter more than the one that works, because two of them are what an operator will actually meet:
+     * no model in this repository contains a locator yet.
+     */
+    static @NotNull Rig seatedRig() {
+        return Rig.builder("coach", "coach-model", RIG_BOUNDS, PROFILE_BOUNDS)
+                .root("body")
+                .kind(RigKind.VEHICLE)
+                .seatBounds(SEAT_BOUNDS)
+                .seat(RigSeat.of("driver", "saddle", true))
+                .seat(new RigSeat("pillion", "pillion", false, 0.25F, 0.5F, -0.75F))
+                .seat(RigSeat.of("crate", "mount", false))
+                .seat(RigSeat.of("ghost", "nowhere", false))
+                .build();
+    }
+
+    /** The locators {@link #rig()}'s single seat resolves against: one, half a block up. */
+    static @NotNull FakeSeatLocators locators() {
+        return new FakeSeatLocators().locator("saddle", 0D, 0.5D, 0D);
+    }
+
+    /**
+     * The locators {@link #seatedRig()} resolves against.
+     *
+     * <p>Two genuine locators, one ordinary bone called {@code mount} — the bone four of this
+     * repository's models carry, which is not a seat and must not become one — and nothing at all for the
+     * fourth seat.
+     */
+    static @NotNull FakeSeatLocators seatedLocators() {
+        return new FakeSeatLocators()
+                .locator("saddle", 0D, 1D, 0.5D)
+                .locator("pillion", 0D, 1D, -0.5D)
+                .bone("mount");
     }
 
     /**
@@ -73,13 +129,58 @@ final class VehicleFixtures {
      * local-step threshold and a rest speed of a twentieth of a block a tick.
      */
     static @NotNull VehicleSettings settings() {
-        return new VehicleSettings(VEHICLE_BOUNDS, 3L, 6F, 2F, 0.05F);
+        return new VehicleSettings(VEHICLE_BOUNDS, 3L, 6F, 2F, 0.05F, seatSettings());
     }
 
     /** The same settings with a different control period, for the reload path. */
     static @NotNull VehicleSettings settingsWithPeriod(long controlPeriodTicks) {
         return new VehicleSettings(VEHICLE_BOUNDS, controlPeriodTicks,
-                Math.max(6F, controlPeriodTicks), 2F, 0.05F);
+                Math.max(6F, controlPeriodTicks), 2F, 0.05F, seatSettings());
+    }
+
+    /**
+     * Seat settings whose every figure is as deliberately odd as the rest of this class.
+     *
+     * <p>A carrier type nobody would default to, a trim of a quarter block, a three-block carrier step
+     * ceiling and a tenth-of-a-block deadband — each large enough to be asserted against without a
+     * tolerance and none of them the shipped default, so a test that agrees with the configuration is
+     * testing that the configuration is read.
+     *
+     * <p>The chart's labels are plain words rather than the shipped MiniMessage, because a test about
+     * alignment and about which state a seat is in should not also be a test of a colour tag.
+     */
+    static @NotNull SeatSettings seatSettings() {
+        return new SeatSettings("MAGMA_CUBE", 0.25F, 3F, 0.1F, true, chartLabels());
+    }
+
+    /** The same seat settings with the chart switched off, which is the operator's own verbosity key. */
+    static @NotNull SeatSettings silentSeatSettings() {
+        return new SeatSettings("MAGMA_CUBE", 0.25F, 3F, 0.1F, false, chartLabels());
+    }
+
+    /** Settings carrying {@code seats}, for a test about one seat figure. */
+    static @NotNull VehicleSettings settingsWithSeats(@NotNull SeatSettings seats) {
+        return new VehicleSettings(VEHICLE_BOUNDS, 3L, 6F, 2F, 0.05F, seats);
+    }
+
+    /** Chart labels with no markup in them, so an assertion can be about the text. */
+    static @NotNull SeatSettings.Chart chartLabels() {
+        return new SeatSettings.Chart(
+                "top <title>",
+                "chart <rig> on <model> (<declared>)",
+                "| ",
+                "<seat>",
+                "LOCATOR",
+                "BONE",
+                "MISSING",
+                "driver",
+                "passenger",
+                "offset <x> <y> <z>",
+                "on-locator",
+                "end <usable>/<declared> usable, <unusable> unusable",
+                "fix the locator",
+                "bottom",
+                2);
     }
 
     /**

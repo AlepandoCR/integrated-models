@@ -1,10 +1,5 @@
 package pandastic.studio.models.internal.decoration;
 
-import kr.toxicity.model.api.BetterModel;
-import kr.toxicity.model.api.bukkit.platform.BukkitAdapter;
-import kr.toxicity.model.api.data.renderer.ModelRenderer;
-import kr.toxicity.model.api.tracker.DummyTracker;
-import kr.toxicity.model.api.tracker.TrackerModifier;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -13,6 +8,7 @@ import org.jetbrains.annotations.NotNull;
 import pandastic.studio.models.api.decoration.DecorationPlacement;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
+import pandastic.studio.models.internal.spi.ModelRenderBackends;
 
 import java.util.Objects;
 import java.util.UUID;
@@ -39,18 +35,6 @@ import java.util.UUID;
  * points and nowhere else in the layer.
  */
 public final class WorldDecorationAnchor implements DecorationAnchor {
-
-    /**
-     * The modifier every decoration tracker is created with.
-     *
-     * <p><strong>Not a tunable: a correctness requirement.</strong> The renderer's default filters every
-     * viewer through its own line-of-sight test, which for a decoration is wrong twice over — this
-     * plugin's viewer list is the decision, and the test reads a player's eye location from whichever
-     * thread asked for the spawn. The other two flags are left at their defaults because they describe
-     * reactions to an entity being damaged, and a decoration has no entity.
-     */
-    private static final @NotNull TrackerModifier MODIFIER =
-            TrackerModifier.builder().sightTrace(false).build();
 
     private final @NotNull Plugin plugin;
     private final @NotNull World world;
@@ -95,6 +79,17 @@ public final class WorldDecorationAnchor implements DecorationAnchor {
         return true;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Handed straight to the installed rendering backend, which is the only part of this class that is
+     * not plain Bukkit. The backend stands the model at a position with no entity behind it — that is the
+     * whole reason a decoration is cheap, since there is nothing to own, to tick or to let the server
+     * tick for us — and it takes ownership of whatever it creates, so a bind that fails leaves nothing
+     * standing in the world. Switching off the renderer's own line-of-sight filtering is part of that
+     * contract rather than of this class; see
+     * {@link pandastic.studio.models.internal.spi.ModelRenderBackend#bindDecoration}.
+     */
     @Override
     public @NotNull DecorationRendering open(
             @NotNull Rig rig,
@@ -102,17 +97,8 @@ public final class WorldDecorationAnchor implements DecorationAnchor {
     ) {
         Objects.requireNonNull(rig, "rig");
         Objects.requireNonNull(placement, "placement");
-        final ModelRenderer renderer = BetterModel.model(rig.getModelId()).orElseThrow(
-                () -> new IllegalStateException(
-                        "Rig '" + rig.getName() + "' points at model '" + rig.getModelId()
-                                + "', which BetterModel has not loaded. Check the model name and that"
-                                + " its file is in BetterModel's model folder."));
-        // The location overload, which is the whole reason a decoration is cheap: it yields a tracker
-        // holding its own position, with no entity to own, to tick or to let the server tick for us.
-        final DummyTracker tracker =
-                renderer.create(BukkitAdapter.adapt(locationOf(placement)), MODIFIER);
-        // Takes ownership of the tracker, including closing it if the rig cannot be bound.
-        return TrackerDecorationRendering.bind(rig, tracker, this.world, this.renderSettings);
+        return ModelRenderBackends.require()
+                .bindDecoration(this.world, placement, rig, this.renderSettings);
     }
 
     @Override

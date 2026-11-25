@@ -1,4 +1,4 @@
-package pandastic.studio.models.internal.binding;
+package pandastic.studio.models.bettermodel.tracker;
 
 import kr.toxicity.model.api.tracker.Tracker;
 import kr.toxicity.model.api.animation.AnimationIterator;
@@ -12,8 +12,9 @@ import org.jetbrains.annotations.NotNull;
 import org.bukkit.entity.Player;
 import pandastic.studio.models.api.render.PoseSink;
 import pandastic.studio.models.api.rig.Rig;
+import pandastic.studio.models.bettermodel.render.TrackerPoseSink;
+import pandastic.studio.models.internal.binding.RenderBinding;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
-import pandastic.studio.models.internal.render.TrackerPoseSink;
 
 import java.util.Objects;
 import java.util.Set;
@@ -21,10 +22,11 @@ import java.util.Set;
 /**
  * A live BetterModel tracker and the sink writing poses onto it.
  *
- * <p>The adapter on the far side of the {@link RenderBinding} seam, and deliberately the only class in
- * this package that cannot be exercised without a server: {@code Tracker} is a sealed class permitting
- * only the renderer's own two subclasses, so an instance of it is not constructible here. Everything
- * with a decision in it therefore lives on the other side, and what is left is three delegations.
+ * <p>The adapter on the far side of the {@link RenderBinding} seam, and deliberately a class that cannot
+ * be exercised without a server: {@code Tracker} is a sealed class permitting only the renderer's own two
+ * subclasses, so an instance of it is not constructible in a test. Everything with a decision in it
+ * therefore lives on the other side of the seam, in {@code integrated-models-internal}, and what is left
+ * here is delegation.
  *
  * <h2>Detach and close are not the same call</h2>
  * The renderer offers no way to remove a frame handler once registered, so a sink stops emitting by
@@ -33,7 +35,7 @@ import java.util.Set;
  *
  * <p>{@link #close()} is neither of those: it despawns the renderer's displays and removes whatever real
  * entities it created for hitboxes. It is latched on the renderer's side, so calling it twice is free —
- * but it is world mutation, which is why the binding routes it through {@link ModelAnchor} rather than
+ * but it is world mutation, which is why the binding layer routes it through its own anchor rather than
  * calling it whenever it feels like it.
  */
 public final class TrackerRenderBinding implements RenderBinding {
@@ -197,6 +199,29 @@ public final class TrackerRenderBinding implements RenderBinding {
                 .speed(1F)
                 .start(1)
                 .end(0)
+                .build();
+        return this.tracker.animate(animationName, modifier);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>BetterModel calls the two durations {@code start} and {@code end} and documents them as "lerp-in
+     * time" and "lerp-out time", in ticks. They are the renderer's own blend, so the clip layer's
+     * configured values go straight through.
+     */
+    @Override
+    public boolean playAnimation(
+            @NotNull String animationName,
+            boolean loop,
+            int blendInTicks,
+            int blendOutTicks
+    ) {
+        final AnimationModifier modifier = AnimationModifier.builder()
+                .type(loop ? AnimationIterator.Type.LOOP : AnimationIterator.Type.PLAY_ONCE)
+                .speed(1F)
+                .start(Math.max(0, blendInTicks))
+                .end(Math.max(0, blendOutTicks))
                 .build();
         return this.tracker.animate(animationName, modifier);
     }

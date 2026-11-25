@@ -1,4 +1,4 @@
-package pandastic.studio.models.internal.decoration;
+package pandastic.studio.models.bettermodel.tracker;
 
 import kr.toxicity.model.api.BetterModel;
 import kr.toxicity.model.api.bukkit.platform.BukkitAdapter;
@@ -11,7 +11,7 @@ import org.jetbrains.annotations.Nullable;
 import pandastic.studio.models.api.decoration.DecorationPlacement;
 import pandastic.studio.models.api.render.PoseSink;
 import pandastic.studio.models.api.rig.Rig;
-import pandastic.studio.models.internal.binding.TrackerRenderBinding;
+import pandastic.studio.models.internal.decoration.DecorationRendering;
 import pandastic.studio.models.internal.render.RenderSettingsSource;
 
 import java.util.Objects;
@@ -21,11 +21,11 @@ import java.util.UUID;
  * A live BetterModel dummy tracker, the sink writing poses onto it, and the three operations a
  * decoration needs that an entity-backed binding gets from its entity.
  *
- * <p>The adapter on the far side of the {@link DecorationRendering} seam, and deliberately the only
- * class in this package that cannot be exercised without a server: {@code Tracker} is a sealed class
- * permitting only the renderer's own two subclasses, so an instance of it is not constructible here.
- * Everything with a decision in it therefore lives on the other side of the seam, and what is left is
- * delegation.
+ * <p>The adapter on the far side of the {@link DecorationRendering} seam, and deliberately a class that
+ * cannot be exercised without a server: {@code Tracker} is a sealed class permitting only the renderer's
+ * own two subclasses, so an instance of it is not constructible in a test. Everything with a decision in
+ * it therefore lives on the other side of the seam, in {@code integrated-models-internal}, and what is
+ * left here is delegation.
  *
  * <h2>Why it delegates the pose path instead of reimplementing it</h2>
  * A dummy tracker and an entity tracker are the same thing to the pose path: both are a {@code Tracker}
@@ -41,7 +41,7 @@ import java.util.UUID;
  * and the test reads a player's eye location from whichever thread asked, which for a show issued off
  * the owning region thread is exactly the undefined read the rest of this layer is built to avoid.
  */
-final class TrackerDecorationRendering implements DecorationRendering {
+public final class TrackerDecorationRendering implements DecorationRendering {
 
     private final @NotNull World world;
     private final @NotNull DummyTracker tracker;
@@ -74,7 +74,7 @@ final class TrackerDecorationRendering implements DecorationRendering {
      * @throws IllegalStateException if the tracker renders a different model than the rig names, or any
      *                               bone is missing, ambiguous, or has no display to drive
      */
-    static @NotNull TrackerDecorationRendering bind(
+    public static @NotNull TrackerDecorationRendering bind(
             @NotNull Rig rig,
             @NotNull DummyTracker tracker,
             @NotNull World world,

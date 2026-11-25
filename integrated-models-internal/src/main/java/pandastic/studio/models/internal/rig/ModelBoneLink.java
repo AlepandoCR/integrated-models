@@ -12,7 +12,7 @@ import org.jetbrains.annotations.NotNull;
  * model bone, and a bone with <strong>no display</strong>. The first two are answerable from the names
  * alone. The third is not, and it is the common one: a group with no cubes in it — a pivot, a locator,
  * the empty root a rigger parents everything under — gets no display entity, so a rig naming it cannot
- * move anything and {@code TrackerPoseSink.bind} says so and fails. A derivation that could not see that
+ * move anything and the rendering backend's live bind says so and fails. A derivation that could not see that
  * bit would pick such a bone roughly as often as models have empty roots, which is most of them.
  *
  * <p>So it travels with the name, which is also what keeps

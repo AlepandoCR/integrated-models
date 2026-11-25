@@ -33,17 +33,24 @@ import java.util.Objects;
  *                               goes through the asynchronous teleport
  * @param restSpeedBlocksPerTick speed below which a coasting vehicle is snapped to a stop, so that
  *                               friction's geometric tail stops costing a position write per tick
+ * @param seats                  everything the seating layer reads: the carrier, the thresholds its
+ *                               follow step is decided against, and every label of the seat chart. Here
+ *                               rather than beside this record so that one snapshot read per control step
+ *                               covers the loop and the seats alike — a step that read them separately
+ *                               could straddle a reload and mix two generations
  */
 public record VehicleSettings(
         @NotNull VehicleBounds bounds,
         long controlPeriodTicks,
         float maxStepTicks,
         float maxLocalStepBlocks,
-        float restSpeedBlocksPerTick
+        float restSpeedBlocksPerTick,
+        @NotNull SeatSettings seats
 ) {
 
     public VehicleSettings {
         Objects.requireNonNull(bounds, "bounds");
+        Objects.requireNonNull(seats, "seats");
         if (controlPeriodTicks < 1L) {
             // The platform treats any period below one tick as one, so a zero or negative figure does
             // not do what a file saying it would mean — it silently becomes one. Refusing it is what

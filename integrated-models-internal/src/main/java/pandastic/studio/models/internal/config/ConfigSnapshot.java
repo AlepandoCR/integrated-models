@@ -12,7 +12,9 @@ import pandastic.studio.models.api.render.CadenceBounds;
 import pandastic.studio.models.api.rig.ProfileBounds;
 import pandastic.studio.models.api.rig.ProfileDefaults;
 import pandastic.studio.models.api.rig.RigBounds;
+import pandastic.studio.models.api.rig.SeatBounds;
 import pandastic.studio.models.api.vehicle.VehicleBounds;
+import pandastic.studio.models.internal.render.AnimationOwnership;
 import pandastic.studio.models.internal.rig.RigDiagnostic;
 
 /**
@@ -48,6 +50,10 @@ import pandastic.studio.models.internal.rig.RigDiagnostic;
  *                        against {@code profileBounds} before the snapshot exists, because the bounds
  *                        have to admit the defaults a rig file falls back to
  * @param rigBounds    bounds a rig as a whole is validated against
+ * @param seatBounds   bounds a vehicle rig's seats are validated against. Mapped from
+ *                     {@code vehicle.yml} rather than {@code physics.yml} like the other rig bounds,
+ *                     because what it describes is a passenger budget; the rig loader is only where a
+ *                     seat is written down
  * @param gait         walk cycle calibration
  * @param bindingBounds bounds a locomotion binding and a gait profile are validated against
  * @param cadenceBounds the interpolation window an emission cadence may choose from
@@ -78,6 +84,19 @@ import pandastic.studio.models.internal.rig.RigDiagnostic;
  *                      component per key and nothing else, so an options record beside it would be a
  *                      second declaration of the same seven whose only job is to be copied into the
  *                      first
+ * @param clips         the thresholds and blend times a rig's own animation clips are driven from. The
+ *                      fifth component that is a value type from another internal package, and carried
+ *                      whole for the reason {@code view} and {@code binding} are: the clip layer's
+ *                      settings source hands this straight through, so the object a decision reads is
+ *                      this one and its identity is stable for as long as the configuration behind it is.
+ *                      Mapped from {@code gait.yml}, because choosing between a model's own walk and the
+ *                      synthesised one is a locomotion question
+ * @param input         how a player's keys and clicks are observed and judged. The sixth component
+ *                      that is a value type from another internal package, and carried whole for the
+ *                      reason {@code view}, {@code binding} and {@code clips} are: the input layer's
+ *                      settings source hands this straight through, so the object one observation's
+ *                      dispatch reads is this one and its identity is stable for as long as the
+ *                      configuration behind it is
  */
 public record ConfigSnapshot(
         long revision,
@@ -85,6 +104,7 @@ public record ConfigSnapshot(
         @NotNull ProfileBounds profileBounds,
         @NotNull ProfileDefaults profileDefaults,
         @NotNull RigBounds rigBounds,
+        @NotNull SeatBounds seatBounds,
         @NotNull GaitTuning gait,
         @NotNull BindingBounds bindingBounds,
         @NotNull CadenceBounds cadenceBounds,
@@ -102,7 +122,9 @@ public record ConfigSnapshot(
         @NotNull pandastic.studio.models.internal.menu.MenuSettings menu,
         @NotNull pandastic.studio.models.internal.view.ViewSettings view,
         @NotNull pandastic.studio.models.internal.binding.BindingSettings binding,
-        @NotNull pandastic.studio.models.internal.command.CommandSettings command
+        @NotNull pandastic.studio.models.internal.command.CommandSettings command,
+        @NotNull pandastic.studio.models.internal.sim.ClipSettings clips,
+        @NotNull pandastic.studio.models.internal.input.InputSettings input
 ) {
 
     /** The revision of a snapshot that was never published, i.e. the declared defaults. */
@@ -120,12 +142,18 @@ public record ConfigSnapshot(
      * @param maxStepTicks             longest gap one step will integrate across
      * @param maxLocalStepBlocks       furthest a single in-place position write may reach
      * @param restSpeedBlocksPerTick   speed below which a vehicle is treated as stopped
+     * @param seats                    the seating layer's own values: the carrier, its two thresholds and
+     *                                 every label of the seat chart. Carried whole, like
+     *                                 {@link #view()} and {@link #binding()} and for the same reason —
+     *                                 the vehicle layer's settings source hands this straight through,
+     *                                 so the object a control step compares and reads is this one
      */
     public record VehicleOptions(
             int controlPeriodTicks,
             float maxStepTicks,
             float maxLocalStepBlocks,
-            float restSpeedBlocksPerTick
+            float restSpeedBlocksPerTick,
+            @NotNull pandastic.studio.models.internal.vehicle.SeatSettings seats
     ) {
     }
 
@@ -166,12 +194,17 @@ public record ConfigSnapshot(
      * @param jitterTolerance         whether to overshoot the interpolation window by one tick
      * @param boneDirtyEpsilonRadians angular change below which a bone is not re-emitted
      * @param boneNamesInMessage      how many model bone names a binding error lists in full
+     * @param animationOwnership      what the emission path does with a bone the model's own clips
+     *                                keyframe. Already resolved from its name, because a name that
+     *                                resolves to nothing refuses the whole reload rather than reaching
+     *                                a reader as a string it has to interpret
      */
     public record RenderOptions(
             int emissionHz,
             boolean jitterTolerance,
             float boneDirtyEpsilonRadians,
-            int boneNamesInMessage
+            int boneNamesInMessage,
+            @NotNull AnimationOwnership animationOwnership
     ) {
     }
 
@@ -311,7 +344,8 @@ public record ConfigSnapshot(
                 new MenuConfig(),
                 new ViewConfig(),
                 new BindingConfig(),
-                new CommandConfig()
+                new CommandConfig(),
+                new InputConfig()
         ).snapshotOrThrow();
     }
 
@@ -324,10 +358,11 @@ public record ConfigSnapshot(
     @Contract(value = "_ -> new", pure = true)
     public @NotNull ConfigSnapshot withRevision(long revision) {
         return new ConfigSnapshot(revision, this.physics, this.profileBounds, this.profileDefaults,
-                this.rigBounds, this.gait, this.bindingBounds, this.cadenceBounds, this.driverBounds,
+                this.rigBounds, this.seatBounds, this.gait, this.bindingBounds, this.cadenceBounds,
+                this.driverBounds,
                 this.ikTolerance, this.render, this.simulation, this.diagnostics, this.rig,
                 this.decoration, this.aiBounds, this.ai, this.vehicleBounds, this.vehicle, this.menu,
-                this.view, this.binding, this.command);
+                this.view, this.binding, this.command, this.clips, this.input);
     }
 
     /**

@@ -82,4 +82,24 @@ public interface NmsBridge {
      */
     @NotNull
     MovementBridge movement();
+
+    /**
+     * Packet-level input capture: the only way to suppress a movement input, and the only way to see
+     * one before the server applies it.
+     *
+     * <p>A {@code default} rather than an abstract method, unlike the four above, and for a reason
+     * that is about this seam specifically: it is the one capability the plugin is written to work
+     * <em>without</em>. An adapter that has not implemented it should not have to carry a stub saying
+     * so, and the declining default is a complete answer — the input layer keeps observing movement
+     * and actions through the platform's own api and reports the reduced capability once. The four
+     * abstract ones have no such answer: a bridge with no brain surface cannot install AI at all.
+     *
+     * @return the capture bridge, declining by default
+     * @see InputCaptureBridge
+     */
+    @NotNull
+    default InputCaptureBridge inputCapture() {
+        return new InputCaptureBridge() {
+        };
+    }
 }

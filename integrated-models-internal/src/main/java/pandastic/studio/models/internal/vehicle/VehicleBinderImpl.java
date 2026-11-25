@@ -2,9 +2,12 @@ package pandastic.studio.models.internal.vehicle;
 
 import org.bukkit.entity.Entity;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import pandastic.studio.models.api.model.ModelManager;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.vehicle.VehicleBinder;
 import pandastic.studio.models.api.vehicle.VehicleProfile;
+import pandastic.studio.models.api.vehicle.VehicleSetup;
 import pandastic.studio.models.internal.sim.SimulationClock;
 import pandastic.studio.models.internal.sim.SimulationLogger;
 
@@ -52,6 +55,20 @@ public final class VehicleBinderImpl implements VehicleBinder {
     private final @NotNull SimulationClock clock;
     private final @NotNull SimulationLogger logger;
 
+    /** Where every vehicle this binder creates writes its seat chart. */
+    private final @NotNull SeatChartSink chartSink;
+
+    /**
+     * Where every vehicle this binder creates reads its riders' input.
+     *
+     * <p>One source for the whole server rather than one per vehicle, because it is the input layer and
+     * there is one of those. {@code null} means "derive it from each vehicle's own host", which is the
+     * movement-only fallback a server with no input capture gets — see
+     * {@link RiderInputSource#fromHost(VehicleHost)}. Held nullable rather than resolved here because
+     * {@code fromHost} needs a host and a host is per vehicle.
+     */
+    private final @Nullable RiderInputSource inputs;
+
     /**
      * Every vehicle handed out and not yet torn down.
      *
@@ -61,25 +78,64 @@ public final class VehicleBinderImpl implements VehicleBinder {
      */
     private final @NotNull Set<VehicleImpl> running = ConcurrentHashMap.newKeySet();
 
+    /** The published registry; see {@code ModelBinderImpl} for why this is not a second copy of the set. */
+    private final @NotNull ModelManager registry;
+
     /**
      * @param hosts    how an entity becomes something this layer may drive
      * @param visuals  where a vehicle's model comes from, or {@link VehicleVisualFactory#NONE}
      * @param settings where the bounds, the clamps and the control period come from
      * @param clock    the monotonic clock every control step differences
-     * @param logger   where a control step that threw is reported
+     * @param logger    where a control step that threw is reported
+     * @param chartSink where each vehicle's seat chart is written. The whole chart is an operator-facing
+     *                  report rather than a diagnostic, which is why it goes to a component logger and
+     *                  not through {@code logger}
+     * @param registry  where every vehicle this binder creates is published
      */
     public VehicleBinderImpl(
             @NotNull VehicleHostFactory hosts,
             @NotNull VehicleVisualFactory visuals,
             @NotNull VehicleSettingsSource settings,
             @NotNull SimulationClock clock,
-            @NotNull SimulationLogger logger
+            @NotNull SimulationLogger logger,
+            @NotNull SeatChartSink chartSink,
+            @NotNull ModelManager registry
+    ) {
+        this(hosts, visuals, settings, clock, logger, chartSink, registry, null);
+    }
+
+    /**
+     * @param hosts    how an entity becomes something this layer may drive
+     * @param visuals  where a vehicle's model comes from, or {@link VehicleVisualFactory#NONE}
+     * @param settings where the bounds, the clamps and the control period come from
+     * @param clock    the monotonic clock every control step differences
+     * @param logger   where a control step that threw is reported
+     * @param chartSink where each vehicle's seat chart is written
+     * @param registry where every vehicle this binder creates is published
+     * @param inputs   where every vehicle reads its riders' input, or {@code null} to derive the
+     *                 movement-only fallback from each vehicle's own host. The production value is
+     *                 {@link RiderInputSource#of} over the plugin's {@code PlayerInputController}: with
+     *                 it a consumer's per-seat listeners see all twelve mapped inputs and their timing,
+     *                 without it only the seven movement keys and no edges
+     */
+    public VehicleBinderImpl(
+            @NotNull VehicleHostFactory hosts,
+            @NotNull VehicleVisualFactory visuals,
+            @NotNull VehicleSettingsSource settings,
+            @NotNull SimulationClock clock,
+            @NotNull SimulationLogger logger,
+            @NotNull SeatChartSink chartSink,
+            @NotNull ModelManager registry,
+            @Nullable RiderInputSource inputs
     ) {
         this.hosts = Objects.requireNonNull(hosts, "hosts");
         this.visuals = Objects.requireNonNull(visuals, "visuals");
         this.settings = Objects.requireNonNull(settings, "settings");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.logger = Objects.requireNonNull(logger, "logger");
+        this.chartSink = Objects.requireNonNull(chartSink, "chartSink");
+        this.registry = Objects.requireNonNull(registry, "registry");
+        this.inputs = inputs;
     }
 
     @Override
@@ -88,9 +144,20 @@ public final class VehicleBinderImpl implements VehicleBinder {
             @NotNull VehicleProfile profile,
             @NotNull Entity root
     ) {
+        return create(rig, profile, root, VehicleSetup.DEFAULT);
+    }
+
+    @Override
+    public @NotNull VehicleImpl create(
+            @NotNull Rig rig,
+            @NotNull VehicleProfile profile,
+            @NotNull Entity root,
+            @NotNull VehicleSetup setup
+    ) {
         Objects.requireNonNull(rig, "rig");
         Objects.requireNonNull(profile, "profile");
         Objects.requireNonNull(root, "root");
+        Objects.requireNonNull(setup, "setup");
 
         // 1. The operator's ranges. Pure, so it costs nothing to do first and it names the component.
         profile.requireWithin(this.settings.current().bounds());
@@ -118,11 +185,14 @@ public final class VehicleBinderImpl implements VehicleBinder {
         // 4. The rig. Nothing exists in the world yet, so a failure here costs nothing to unwind.
         final VehicleVisual visual = this.visuals.visualFor(rig, root);
 
+        final RiderInputSource source =
+                this.inputs == null ? RiderInputSource.fromHost(host) : this.inputs;
         final VehicleImpl vehicle = new VehicleImpl(rig, profile, host, visual, this.settings,
-                this.clock, this.logger, this.running::remove);
-        // Registered before it is started, so a start that fails halfway tears itself out of the set
-        // through the same teardown every other exit uses.
+                this.clock, this.logger, this.chartSink, setup, source, this::unregister);
+        // Registered before it is started, so a start that fails halfway tears itself out of both
+        // collections through the same teardown every other exit uses.
         this.running.add(vehicle);
+        this.registry.addModel(vehicle);
         try {
             if (!vehicle.start()) {
                 // The root vanished between the checks above and the dispatch — a race a caller cannot
@@ -138,6 +208,17 @@ public final class VehicleBinderImpl implements VehicleBinder {
             throw failed;
         }
         return vehicle;
+    }
+
+    /**
+     * Forgets {@code vehicle}, from both this layer's shutdown list and the published registry.
+     *
+     * <p>Handed to every vehicle as its {@code onStopped} callback, so it runs exactly once per vehicle,
+     * on whichever thread noticed it was finished.
+     */
+    private void unregister(@NotNull VehicleImpl vehicle) {
+        this.running.remove(vehicle);
+        this.registry.removeModel(vehicle);
     }
 
     /** Every vehicle currently running, as a snapshot. */
@@ -171,6 +252,9 @@ public final class VehicleBinderImpl implements VehicleBinder {
             } catch (final RuntimeException | Error ignored) {
                 // Deliberately swallowed; see above.
             }
+            // Belt and braces, and only on this path: a teardown that threw before reaching its own
+            // onStopped callback would otherwise leave the registry naming a vehicle that is gone.
+            this.registry.removeModel(vehicle);
             despawned++;
         }
         this.running.clear();

@@ -20,6 +20,15 @@ final class FakeVehicleVisual implements VehicleVisual {
     private boolean throwOnSpawn;
     private int despawnCount;
 
+    /**
+     * The locators of the model this visual stands in for.
+     *
+     * <p>{@link SeatLocators#NONE} by default, which is a model with no locator in it — the state every
+     * model in this repository is in today, and therefore the right default for a test that is not about
+     * seats.
+     */
+    private @NotNull SeatLocators locators = SeatLocators.NONE;
+
     FakeVehicleVisual(@NotNull List<String> journal) {
         this.journal = journal;
     }
@@ -49,6 +58,17 @@ final class FakeVehicleVisual implements VehicleVisual {
     @Override
     public boolean isAlive() {
         return this.alive;
+    }
+
+    @Override
+    public @NotNull SeatLocators locators() {
+        return this.locators;
+    }
+
+    /** Gives this visual's model some locators to resolve seats against. */
+    FakeVehicleVisual locators(@NotNull SeatLocators newLocators) {
+        this.locators = newLocators;
+        return this;
     }
 
     FakeVehicleVisual refuseSpawn() {

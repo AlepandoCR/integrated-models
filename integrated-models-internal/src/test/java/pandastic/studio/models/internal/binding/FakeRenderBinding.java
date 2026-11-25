@@ -14,7 +14,7 @@ import java.util.Set;
  *
  * <p>Its sink models the real one's one load-bearing behaviour: after {@code detach} it accepts nothing.
  * That is what makes "detach happened before the tracker was released" checkable from out here — the
- * real {@code TrackerPoseSink} gates on a volatile flag for exactly this reason, and a fake that kept
+ * real pose sink in the backend module gates on a volatile flag for exactly this reason, and a fake that kept
  * accepting poses after detaching would let a teardown ordering bug pass.
  */
 final class FakeRenderBinding implements RenderBinding {

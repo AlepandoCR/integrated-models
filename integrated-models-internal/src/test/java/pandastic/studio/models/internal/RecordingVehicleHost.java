@@ -13,6 +13,10 @@ import java.util.UUID;
 /**
  * A vehicle host that records its lifecycle events under a name.
  *
+ * <p>Inheriting the seam's default {@code spawnCarrier} is deliberate rather than an omission: a host
+ * that cannot spawn a carrier is a vehicle whose seats are reported unoccupiable, which is exactly the
+ * state a test about wiring wants.
+ *
  * <p>Reports an alive root owned by the calling thread, supports an in-place move, and has no rider:
  * the vehicle layer's own refusals, authority model and control arithmetic are {@code VehicleImplTest}'s
  * and {@code VehicleStepperTest}'s subject, and duplicating them here would test them twice and the
@@ -99,16 +103,6 @@ final class RecordingVehicleHost implements VehicleHost {
             @NotNull BooleanSink whenDone
     ) {
         whenDone.accept(true);
-    }
-
-    @Override
-    public @Nullable Player rider() {
-        return null;
-    }
-
-    @Override
-    public boolean mount(@NotNull Player rider) {
-        return false;
     }
 
     @Override

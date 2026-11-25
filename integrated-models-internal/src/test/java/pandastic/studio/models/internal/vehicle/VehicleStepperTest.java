@@ -169,7 +169,8 @@ class VehicleStepperTest {
         // The other half of the previous assertion, and what distinguishes a layer that reads its
         // configuration from one that happens to agree with a literal.
         final VehicleSettings generous =
-                new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 3L, 6F, 8F, 0.05F);
+                new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 3L, 6F, 8F, 0.05F,
+                        VehicleFixtures.seatSettings());
         final VehicleState fast = new VehicleState(1F, 0F, 0F);
 
         final VehicleStepper.Plan plan = VehicleStepper.plan(fast,
@@ -182,7 +183,8 @@ class VehicleStepperTest {
     @Test
     void theRestThresholdIsTheConfiguredOneRatherThanALiteral() {
         final VehicleSettings twitchy =
-                new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 3L, 6F, 2F, 0.0001F);
+                new VehicleSettings(VehicleFixtures.VEHICLE_BOUNDS, 3L, 6F, 2F, 0.0001F,
+                        VehicleFixtures.seatSettings());
         final VehicleState crawling = new VehicleState(0.04F, 0F, 0F);
 
         final VehicleStepper.Plan plan = VehicleStepper.plan(crawling, RiderIntent.NONE,
