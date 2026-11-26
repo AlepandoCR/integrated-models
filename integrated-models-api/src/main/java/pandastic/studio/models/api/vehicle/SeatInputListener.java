@@ -26,6 +26,20 @@ import org.jetbrains.annotations.NotNull;
  * <p>Anything thrown is caught and reported by the vehicle layer, and the step carries on. A listener
  * that throws every step is a log line per step, which is loud on purpose — the alternative is a
  * listener nobody notices has stopped working.
+ *
+ * <h2>How this differs from {@link VehicleController}, and how they run together</h2>
+ * This is the <strong>composing</strong> shape: a map from seat to function, where two listeners on one
+ * seat both run and neither owns anything. {@link VehicleController} is the <strong>single-owner</strong>
+ * shape, one object per kind of vehicle holding that kind's state in fields. A consumer may supply both,
+ * and then for each seat this listener runs <em>first</em> and the controller second, with the same
+ * {@link SeatInput} instance — specific before general, which is the order {@link VehicleControls}
+ * already resolves a seat's own bindings in.
+ *
+ * <p>Their failure handling differs for the same reason their shapes do, and deliberately. A listener
+ * holds no state, so one that throws costs that seat's reaction and nothing else and is reported every
+ * time, forever. A controller holds invariants, so one that keeps throwing is throttled and eventually
+ * detached from that vehicle: there is nothing useful left to call. Neither containment is the other's,
+ * so a broken listener never costs the controller its turn.
  */
 @FunctionalInterface
 public interface SeatInputListener {

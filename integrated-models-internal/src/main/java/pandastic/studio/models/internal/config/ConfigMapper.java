@@ -17,6 +17,8 @@ import pandastic.studio.models.api.rig.ProfileBounds;
 import pandastic.studio.models.api.rig.ProfileDefaults;
 import pandastic.studio.models.api.rig.RigBounds;
 import pandastic.studio.models.api.rig.SeatBounds;
+import pandastic.studio.models.api.vehicle.TerrainBounds;
+import pandastic.studio.models.api.vehicle.TerrainResponse;
 import pandastic.studio.models.api.vehicle.VehicleBounds;
 import pandastic.studio.models.internal.menu.ModelAppearance;
 import pandastic.studio.models.internal.render.AnimationOwnership;
@@ -31,6 +33,7 @@ import pandastic.studio.models.internal.sim.ClipSettingsSource;
 // consumer-side value has no api counterpart. Only the outer name is therefore written in full, once,
 // in menuSettings(...) below.
 import pandastic.studio.models.internal.menu.MenuSettings.Animation;
+import pandastic.studio.models.internal.command.StatusSettings;
 import pandastic.studio.models.internal.menu.MenuSettings.Appearance;
 import pandastic.studio.models.internal.menu.MenuSettings.Layout;
 import pandastic.studio.models.internal.menu.MenuSettings.Picker;
@@ -40,9 +43,16 @@ import pandastic.studio.models.internal.menu.MenuSettings.Session;
 // either: pandastic.studio.models.internal.view.ViewSettings, pandastic.studio.models.internal.binding
 // .BindingSettings, pandastic.studio.models.internal.command.CommandSettings and
 // pandastic.studio.models.internal.input.InputSettings share their simple names with the declarations
-// of view.yml, binding.yml, command.yml and input.yml in this package. None has nested records to
-// import, so each is written in full once, in viewSettings(...), bindingSettings(...),
-// commandSettings(...) and inputSettings(...) below.
+// of view.yml, binding.yml, command.yml and input.yml in this package, so each is written in full once,
+// in viewSettings(...), bindingSettings(...), commandSettings(...) and inputSettings(...) below.
+//
+// StatusSettings, which the command settings carry and which holds what the two status reports say, is
+// NOT in that position: nothing in this package shares that simple name, so it is imported normally.
+//
+// pandastic.studio.models.internal.vehicle.VehicleSettings is the same case once more, and the sharpest
+// of them: it shadows the declaration of vehicle.yml in this package, which this class takes as a
+// parameter. Only its nested TerrainDefaults is constructed here, and the outer name is therefore
+// written in full in terrainDefaults(...) below rather than imported.
 
 import java.util.List;
 import java.util.Locale;
@@ -224,12 +234,73 @@ public final class ConfigMapper {
     private static final float MAX_VEHICLE_BOOST_MULTIPLIER = 16F;
 
     /**
+     * Ceiling on a terrain angle, in degrees.
+     *
+     * <p>A geometric fact rather than an input-sanity figure, in the sense
+     * {@link #VIEW_CONE_LIMIT_DEGREES} is one. A quarter turn lays a model on its side; past it the
+     * vehicle is upside down. So an angle beyond this is not a steeper lean — it is a model whose roof
+     * is where its wheels were, which no scaling of the term can turn back into a lean.
+     */
+    private static final float MAX_TERRAIN_ANGLE_DEGREES = 90F;
+
+    /**
+     * Ceiling on a step height, in blocks.
+     *
+     * <p>An input-sanity figure, sized by what the game itself steps: a player walks up a slab, a horse
+     * climbs a block, and nothing climbs two. Four blocks is therefore a vehicle flying over a wall
+     * rather than climbing a step — and the honest way to ask for that is {@code VehicleKind.FLYER}.
+     * The figure that constrains a real server is the operator's own {@code terrain.maxStepHeightBlocks},
+     * far below it.
+     */
+    private static final float MAX_TERRAIN_STEP_HEIGHT_BLOCKS = 4F;
+
+    /**
      * Ceiling on a vehicle's control period, in ticks.
      *
      * <p>An input-sanity figure. A vehicle whose position is decided once a second is not a vehicle a
      * rider can steer, and twenty ticks is that second.
      */
     private static final int MAX_CONTROL_PERIOD_TICKS = 20;
+
+    /**
+     * Ceiling on the distance a vehicle may move before its ground is read again, in blocks.
+     *
+     * <p><strong>Structure rather than an input-sanity figure</strong>, and derived rather than written:
+     * it is the run the terrain probe looks along, so a vehicle that has moved this far is standing in
+     * the column its last reading described as the one ahead. A deadband past it names a reading that is
+     * not stale but is about different ground, and the sampler re-reads at this distance whatever the
+     * file says — so a larger value would be a key an operator could set and watch do nothing.
+     */
+    private static final float MAX_TERRAIN_SAMPLE_DEADBAND_BLOCKS =
+            pandastic.studio.models.internal.vehicle.TerrainSample.PROBE_RUN_BLOCKS;
+
+    /**
+     * Ceiling on a turn before a vehicle's ground is read again, in degrees.
+     *
+     * <p>An input-sanity figure, and the widest one that still means anything: half a turn is the
+     * furthest two headings can be apart, because the difference is normalised onto the seam. A value
+     * above it would describe a vehicle that has to turn further than any turn exists.
+     */
+    private static final float MAX_TURN_DEADBAND_DEGREES = 180F;
+
+    /**
+     * Ceiling on the gap between two readings of the ground, in ticks.
+     *
+     * <p>An input-sanity figure. Twenty ticks is a second, by which point a vehicle at any permitted
+     * speed has crossed several columns and the reading it is holding is about ground it drove past — and
+     * the sampler's own column override has fired many times over anyway.
+     */
+    private static final int MAX_TERRAIN_SAMPLE_INTERVAL_TICKS = 20;
+
+    /**
+     * Ceiling on how long a reading of the ground may be kept, in ticks.
+     *
+     * <p>An input-sanity figure, and generous because what this bounds is the answer to "the world
+     * changed rather than the vehicle". Two hundred ticks is ten seconds: a parked vehicle that notices a
+     * ramp built under it ten seconds late is a slow reaction, while one that never notices is a vehicle
+     * sunk into the ground until somebody drives it.
+     */
+    private static final int MAX_TERRAIN_SAMPLE_AGE_TICKS = 200;
 
     /**
      * Ceiling on the gap one control step will integrate across, in ticks.
@@ -285,6 +356,16 @@ public final class ConfigMapper {
      * and nothing reads this to decide anything about a seat.
      */
     private static final int MAX_SEAT_CHART_COLUMN_GAP = 16;
+
+    /**
+     * Ceiling on the gap between two columns of a status report, in spaces.
+     *
+     * <p>An input-sanity figure, and the same one the seat chart uses rather than a shared constant: the
+     * two reports are drawn by different layers against different files, and one number serving both
+     * would make an edit to either file's ceiling a question about the other. Sixteen spaces already
+     * pushes a column past the width of most consoles, and nothing reads this to decide anything.
+     */
+    private static final int MAX_STATUS_COLUMN_GAP = 16;
 
     /**
      * Ceiling on a menu session's idle timeout, in seconds.
@@ -1267,6 +1348,9 @@ public final class ConfigMapper {
      *       a speed ceiling meant it and a boost is the cheaper of the two to give up.</li>
      * </ul>
      *
+     * <p>The seating half and the terrain half have relationships of their own and are checked in
+     * {@link #checkSeats} and {@link #checkTerrain}; both are different subjects in the same file.
+     *
      * @param vehicle the loaded configuration
      * @param checks  the accumulator receiving the complaints
      */
@@ -1286,6 +1370,8 @@ public final class ConfigMapper {
         // refuse even a profile that declares no boost.
         final float maxBoost = checks.inRange(file, "maxBoostMultiplier",
                 vehicle.maxBoostMultiplier(), 1F, MAX_VEHICLE_BOOST_MULTIPLIER);
+
+        checkTerrain(vehicle, checks);
 
         final int controlPeriod = checks.inRange(file, "controlPeriodTicks",
                 vehicle.controlPeriodTicks(), 1, MAX_CONTROL_PERIOD_TICKS);
@@ -1365,6 +1451,259 @@ public final class ConfigMapper {
         checks.optionalText(file, "seatChartSummary", vehicle.seatChartSummary());
         checks.optionalText(file, "seatChartUnusableNote", vehicle.seatChartUnusableNote());
         checks.optionalText(file, "seatChartBottom", vehicle.seatChartBottom());
+    }
+
+    /**
+     * Checks the terrain half of {@code vehicle.yml}: the six ceilings, and the per-kind defaults against
+     * them.
+     *
+     * <h2>Why zero is legal for every ceiling and not for the blend floor</h2>
+     * A ceiling of zero is a server saying "no vehicle here leans" — the statement
+     * {@code VehicleBounds.NO_TERRAIN} made before these keys existed, and the only response it admits is
+     * the inert one. A <em>blend</em> of zero is not a statement at all: the blend is the fraction of the
+     * remaining difference a model closes each tick, so at zero it closes none of it and never arrives at
+     * the angle it was asked for. The api refuses that at construction, so it is refused here with the
+     * key named instead.
+     *
+     * <h2>Why the step duration's ceiling is the interpolation window's</h2>
+     * Because it is one. A climb is applied as an interpolated transform, and the server re-sends an
+     * entity's position unprompted every sixty ticks, restarting the client's countdown — so a climb
+     * spread over more ticks than that can never complete. {@link #MAX_WINDOW_TICKS} is the same protocol
+     * fact measured on the same thing.
+     *
+     * @param vehicle the loaded configuration
+     * @param checks  the accumulator receiving the complaints
+     */
+    private static void checkTerrain(@NotNull VehicleSettings vehicle, @NotNull ConfigChecks checks) {
+        final ConfigFile file = ConfigFile.VEHICLE;
+
+        final float maxBank = checks.inRange(file, "terrain.maxBankDegrees",
+                vehicle.terrainMaxBankDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float maxSlope = checks.inRange(file, "terrain.maxSlopePitchDegrees",
+                vehicle.terrainMaxSlopePitchDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float maxAccelerationPitch = checks.inRange(file, "terrain.maxAccelerationPitchDegrees",
+                vehicle.terrainMaxAccelerationPitchDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float maxStepHeight = checks.inRange(file, "terrain.maxStepHeightBlocks",
+                vehicle.terrainMaxStepHeightBlocks(), 0F, MAX_TERRAIN_STEP_HEIGHT_BLOCKS);
+        // One rather than zero: a climb takes at least the tick it is applied in, so a ceiling of zero
+        // would admit no response at all rather than forbidding climbing — which is what a step height
+        // of zero is for, and the two are not the same statement.
+        final int maxStepDuration = checks.inRange(file, "terrain.maxStepDurationTicks",
+                vehicle.terrainMaxStepDurationTicks(), 1, MAX_WINDOW_TICKS);
+        final float minBlend = checks.above(file, "terrain.minAngleBlendPerTick",
+                vehicle.terrainMinAngleBlendPerTick(), 0F, 1F);
+
+        checkTerrainDefaults(vehicle, maxBank, maxSlope, maxAccelerationPitch, maxStepHeight,
+                maxStepDuration, minBlend, checks);
+        checkTerrainSampling(vehicle, checks);
+    }
+
+    /**
+     * Checks the five keys that decide how often a vehicle reads the ground.
+     *
+     * <p>A different subject from the angles above: these are about cost, not about behaviour. Two of the
+     * bounds are worth more than a range check and are the reason this is its own method.
+     *
+     * <ul>
+     *   <li><strong>The deadband is capped at one block</strong>, which is the probe's own look-ahead and
+     *       therefore structure rather than taste. A vehicle that has moved a whole column is standing in
+     *       the column its last reading called "ahead", so a larger deadband describes a reading that is
+     *       not stale but simply about somewhere else — and the sampler overrides it regardless, which
+     *       would make the key one an operator could set and watch do nothing.</li>
+     *   <li><strong>The age must not be below the interval.</strong> The age is the override and is
+     *       checked first, so an age under the interval fires on the first step past it and the deadband
+     *       suppresses nothing: the file would then describe a saving the server does not make. Both keys
+     *       are named in the complaint, because the fix is in whichever of the two the operator did not
+     *       mean to leave where it was.</li>
+     * </ul>
+     *
+     * @param vehicle the loaded configuration
+     * @param checks  the accumulator receiving the complaints
+     */
+    private static void checkTerrainSampling(
+            @NotNull VehicleSettings vehicle,
+            @NotNull ConfigChecks checks
+    ) {
+        final ConfigFile file = ConfigFile.VEHICLE;
+
+        // Zero is legal on all three thresholds and together they mean "read on every step", which is
+        // what every vehicle did before these keys existed.
+        checks.inRange(file, "terrain.sampleMoveDeadbandBlocks",
+                vehicle.terrainSampleMoveDeadbandBlocks(), 0F, MAX_TERRAIN_SAMPLE_DEADBAND_BLOCKS);
+        checks.inRange(file, "terrain.sampleTurnDeadbandDegrees",
+                vehicle.terrainSampleTurnDeadbandDegrees(), 0F, MAX_TURN_DEADBAND_DEGREES);
+        final int interval = checks.inRange(file, "terrain.sampleMinIntervalTicks",
+                vehicle.terrainSampleMinIntervalTicks(), 0, MAX_TERRAIN_SAMPLE_INTERVAL_TICKS);
+        final int maxAge = checks.inRange(file, "terrain.sampleMaxAgeTicks",
+                vehicle.terrainSampleMaxAgeTicks(), 1, MAX_TERRAIN_SAMPLE_AGE_TICKS);
+        checks.atMost(file, "terrain.sampleMinIntervalTicks", (float) interval,
+                file, "terrain.sampleMaxAgeTicks", (float) maxAge);
+    }
+
+    /**
+     * Checks the terrain response each vehicle kind inherits, and checks each against the ceiling in the
+     * same file it will be validated against.
+     *
+     * <p>The second half is the one worth having, and it is the reasoning {@link #checkProfileDefaults}
+     * gives applied to a different file. A plugin is entitled to declare no terrain response at all — in
+     * which case the response a vehicle of that kind gets is made entirely of these defaults and is then
+     * validated against those ceilings. An operator who narrowed a ceiling past its own default has
+     * therefore broken every vehicle of that kind on the server, and the only symptom without this check
+     * is a refusal naming a value that appears nowhere in the plugin that asked for the vehicle.
+     *
+     * <p>Each complaint names the {@code terrain.<kind>*} key rather than the ceiling, for the reason
+     * {@code defaultStrideLength} in {@code gait.yml} gives: an operator who edited a ceiling did so
+     * deliberately, so the value that is wrong relative to the other is the default.
+     *
+     * <p>Only the terms a kind honours are checked, because only those have keys. There is no ground
+     * acceleration pitch, and no slope or step for anything but a ground vehicle; see
+     * {@link pandastic.studio.models.api.vehicle.VehicleKind}.
+     *
+     * @param vehicle              the loaded configuration
+     * @param maxBank              the validated roll ceiling
+     * @param maxSlope             the validated slope pitch ceiling
+     * @param maxAccelerationPitch the validated acceleration pitch ceiling
+     * @param maxStepHeight        the validated step ceiling
+     * @param maxStepDuration      the validated climb duration ceiling
+     * @param minBlend             the validated blend floor
+     * @param checks               the accumulator receiving the complaints
+     */
+    private static void checkTerrainDefaults(
+            @NotNull VehicleSettings vehicle,
+            float maxBank,
+            float maxSlope,
+            float maxAccelerationPitch,
+            float maxStepHeight,
+            int maxStepDuration,
+            float minBlend,
+            @NotNull ConfigChecks checks
+    ) {
+        final ConfigFile file = ConfigFile.VEHICLE;
+
+        // Every angle is a magnitude: which way the model leans is the solver's, taken from the sign of
+        // the input, so a negative figure here does not mirror a lean, it names no lean at all.
+        final float groundBank = checks.inRange(file, "terrain.groundBankDegrees",
+                vehicle.defaultGroundBankDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float groundSlope = checks.inRange(file, "terrain.groundSlopePitchDegrees",
+                vehicle.defaultGroundSlopePitchDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float groundStepHeight = checks.inRange(file, "terrain.groundStepHeightBlocks",
+                vehicle.defaultGroundStepHeightBlocks(), 0F, MAX_TERRAIN_STEP_HEIGHT_BLOCKS);
+        // One rather than zero, and the api agrees: a step takes at least the tick it is applied in.
+        // Zero blocks is how climbing is turned off; zero ticks is a duration nothing can mean.
+        final int groundStepDuration = checks.inRange(file, "terrain.groundStepDurationTicks",
+                vehicle.defaultGroundStepDurationTicks(), 1, MAX_WINDOW_TICKS);
+        final float groundBlend = checks.above(file, "terrain.groundAngleBlendPerTick",
+                vehicle.defaultGroundAngleBlendPerTick(), 0F, 1F);
+
+        final float flyerBank = checks.inRange(file, "terrain.flyerBankDegrees",
+                vehicle.defaultFlyerBankDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float flyerPitch = checks.inRange(file,
+                "terrain.flyerAccelerationPitchDegrees",
+                vehicle.defaultFlyerAccelerationPitchDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float flyerBlend = checks.above(file, "terrain.flyerAngleBlendPerTick",
+                vehicle.defaultFlyerAngleBlendPerTick(), 0F, 1F);
+
+        final float submarineBank = checks.inRange(file, "terrain.submarineBankDegrees",
+                vehicle.defaultSubmarineBankDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float submarinePitch = checks.inRange(file,
+                "terrain.submarineAccelerationPitchDegrees",
+                vehicle.defaultSubmarineAccelerationPitchDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float submarineBlend = checks.above(file, "terrain.submarineAngleBlendPerTick",
+                vehicle.defaultSubmarineAngleBlendPerTick(), 0F, 1F);
+
+        final float boatBank = checks.inRange(file, "terrain.boatBankDegrees",
+                vehicle.defaultBoatBankDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float boatPitch = checks.inRange(file, "terrain.boatAccelerationPitchDegrees",
+                vehicle.defaultBoatAccelerationPitchDegrees(), 0F, MAX_TERRAIN_ANGLE_DEGREES);
+        final float boatBlend = checks.above(file, "terrain.boatAngleBlendPerTick",
+                vehicle.defaultBoatAngleBlendPerTick(), 0F, 1F);
+
+        checkTerrainCeiling(checks, "terrain.groundBankDegrees", groundBank,
+                "terrain.maxBankDegrees", maxBank);
+        checkTerrainCeiling(checks, "terrain.flyerBankDegrees", flyerBank,
+                "terrain.maxBankDegrees", maxBank);
+        checkTerrainCeiling(checks, "terrain.submarineBankDegrees", submarineBank,
+                "terrain.maxBankDegrees", maxBank);
+        checkTerrainCeiling(checks, "terrain.boatBankDegrees", boatBank,
+                "terrain.maxBankDegrees", maxBank);
+
+        checkTerrainCeiling(checks, "terrain.groundSlopePitchDegrees", groundSlope,
+                "terrain.maxSlopePitchDegrees", maxSlope);
+
+        checkTerrainCeiling(checks, "terrain.flyerAccelerationPitchDegrees", flyerPitch,
+                "terrain.maxAccelerationPitchDegrees", maxAccelerationPitch);
+        checkTerrainCeiling(checks, "terrain.submarineAccelerationPitchDegrees",
+                submarinePitch, "terrain.maxAccelerationPitchDegrees", maxAccelerationPitch);
+        checkTerrainCeiling(checks, "terrain.boatAccelerationPitchDegrees", boatPitch,
+                "terrain.maxAccelerationPitchDegrees", maxAccelerationPitch);
+
+        checkTerrainCeiling(checks, "terrain.groundStepHeightBlocks", groundStepHeight,
+                "terrain.maxStepHeightBlocks", maxStepHeight);
+        if (groundStepDuration > maxStepDuration) {
+            checks.reject(file, "terrain.groundStepDurationTicks",
+                    "must not exceed terrain.maxStepDurationTicks, which is " + maxStepDuration
+                            + ", but is " + groundStepDuration + ": a ground vehicle whose profile"
+                            + " declares no terrain response inherits this default and is then refused"
+                            + " by that ceiling");
+        }
+
+        checkTerrainBlendFloor(checks, "terrain.groundAngleBlendPerTick", groundBlend,
+                minBlend);
+        checkTerrainBlendFloor(checks, "terrain.flyerAngleBlendPerTick", flyerBlend,
+                minBlend);
+        checkTerrainBlendFloor(checks, "terrain.submarineAngleBlendPerTick", submarineBlend,
+                minBlend);
+        checkTerrainBlendFloor(checks, "terrain.boatAngleBlendPerTick", boatBlend, minBlend);
+    }
+
+    /**
+     * Checks one inherited terrain angle against the ceiling it will be validated against.
+     *
+     * @param checks   the accumulator receiving the complaints
+     * @param key      the {@code terrain.<kind>*} key being checked
+     * @param value    its loaded value
+     * @param boundKey the key carrying the ceiling
+     * @param bound    the ceiling
+     */
+    private static void checkTerrainCeiling(
+            @NotNull ConfigChecks checks,
+            @NotNull String key,
+            float value,
+            @NotNull String boundKey,
+            float bound
+    ) {
+        if (Float.isNaN(value) || Float.isNaN(bound) || value <= bound) {
+            return;
+        }
+        checks.reject(ConfigFile.VEHICLE, key, "must not exceed " + boundKey + ", which is " + bound
+                + ", but is " + value + ": a vehicle of that kind whose profile declares no terrain"
+                + " response inherits this default and is then refused by that ceiling");
+    }
+
+    /**
+     * Checks one inherited blend against the floor it will be validated against.
+     *
+     * <p>Separate from {@link #checkTerrainCeiling} because the blend is the one terrain term whose
+     * dangerous direction is downward: a model that closes too little of the remaining difference each
+     * tick is still leaning into a turn that ended.
+     *
+     * @param checks the accumulator receiving the complaints
+     * @param key    the {@code terrain.<kind>*} key being checked
+     * @param value  its loaded value
+     * @param floor  the slowest blend this server permits
+     */
+    private static void checkTerrainBlendFloor(
+            @NotNull ConfigChecks checks,
+            @NotNull String key,
+            float value,
+            float floor
+    ) {
+        if (Float.isNaN(value) || Float.isNaN(floor) || value >= floor) {
+            return;
+        }
+        checks.reject(ConfigFile.VEHICLE, key, "must be at least terrain.minAngleBlendPerTick, which is "
+                + floor + ", but is " + value + ": a vehicle of that kind whose profile declares no"
+                + " terrain response inherits this default and is then refused by that floor");
     }
 
     /**
@@ -1898,6 +2237,116 @@ public final class ConfigMapper {
         checks.text(file, "reload.diagnosticLine", command.reloadDiagnosticLine());
         checks.text(file, "reload.busyMessage", command.reloadBusyMessage());
         checks.text(file, "reload.failedMessage", command.reloadFailedMessage());
+        checkCommandStatus(command, checks);
+    }
+
+    /**
+     * Checks the {@code status.*} section of {@code command.yml}.
+     *
+     * <h2>Every template is optional, and only the column gap is a number</h2>
+     * Unlike the reload section, which refuses a blank where the line is the command's <em>only</em>
+     * answer, nothing in a status report is load-bearing on its own: emptying a part label hides one row
+     * of a table that still has a summary, and emptying every template is how an operator turns a report
+     * off without taking away the permission. So each one is only refused for being present with no
+     * value at all, which is a shape of edit rather than an opinion.
+     *
+     * <p>Split out of {@link #checkCommand} because this section alone is more keys than every other
+     * command line put together, and a sixty-line method that is two unrelated halves is harder to audit
+     * than two methods.
+     *
+     * @param command the loaded configuration
+     * @param checks  the accumulator receiving the complaints
+     */
+    private static void checkCommandStatus(
+            @NotNull CommandSettings command,
+            @NotNull ConfigChecks checks
+    ) {
+        final ConfigFile file = ConfigFile.COMMAND;
+
+        checks.inRange(file, "status.box.columnGap", command.statusBoxColumnGap(),
+                0, MAX_STATUS_COLUMN_GAP);
+        checks.optionalText(file, "status.box.top", command.statusBoxTop());
+        checks.optionalText(file, "status.box.rowPrefix", command.statusBoxRowPrefix());
+        checks.optionalText(file, "status.box.bottom", command.statusBoxBottom());
+
+        checks.optionalText(file, "status.health.title", command.statusHealthTitle());
+        checks.optionalText(file, "status.health.partCell", command.statusHealthPartCell());
+        checks.optionalText(file, "status.health.stateOk", command.statusHealthStateOk());
+        checks.optionalText(file, "status.health.stateDegraded", command.statusHealthStateDegraded());
+        checks.optionalText(file, "status.health.stateDown", command.statusHealthStateDown());
+        checks.optionalText(file, "status.health.verdictHealthy", command.statusHealthVerdictHealthy());
+        checks.optionalText(file, "status.health.verdictDegraded", command.statusHealthVerdictDegraded());
+        checks.optionalText(file, "status.health.verdictFaulted", command.statusHealthVerdictFaulted());
+        checks.optionalText(file, "status.health.partRenderer", command.statusHealthPartRenderer());
+        checks.optionalText(file, "status.health.partConfiguration",
+                command.statusHealthPartConfiguration());
+        checks.optionalText(file, "status.health.partRigs", command.statusHealthPartRigs());
+        checks.optionalText(file, "status.health.partSimulation", command.statusHealthPartSimulation());
+        checks.optionalText(file, "status.health.partDrivers", command.statusHealthPartDrivers());
+        checks.optionalText(file, "status.health.partAi", command.statusHealthPartAi());
+        checks.optionalText(file, "status.health.partInput", command.statusHealthPartInput());
+        checks.optionalText(file, "status.health.rendererActive", command.statusHealthRendererActive());
+        checks.optionalText(file, "status.health.rendererMissing", command.statusHealthRendererMissing());
+        checks.optionalText(file, "status.health.configurationLive",
+                command.statusHealthConfigurationLive());
+        checks.optionalText(file, "status.health.configurationTrouble",
+                command.statusHealthConfigurationTrouble());
+        checks.optionalText(file, "status.health.rigsLoaded", command.statusHealthRigsLoaded());
+        checks.optionalText(file, "status.health.loopRunning", command.statusHealthLoopRunning());
+        checks.optionalText(file, "status.health.loopStopped", command.statusHealthLoopStopped());
+        checks.optionalText(file, "status.health.loopRedispatch", command.statusHealthLoopRedispatch());
+        checks.optionalText(file, "status.health.aiActive", command.statusHealthAiActive());
+        checks.optionalText(file, "status.health.aiUnavailable", command.statusHealthAiUnavailable());
+        checks.optionalText(file, "status.health.inputActive", command.statusHealthInputActive());
+        checks.optionalText(file, "status.health.inputDegraded", command.statusHealthInputDegraded());
+        checks.optionalText(file, "status.health.summary", command.statusHealthSummary());
+        checks.optionalText(file, "status.health.gapLine", command.statusHealthGapLine());
+        checks.optionalText(file, "status.health.gapEmissionMetrics",
+                command.statusHealthGapEmissionMetrics());
+        checks.optionalText(file, "status.health.gapRigDiagnostics",
+                command.statusHealthGapRigDiagnostics());
+        checks.optionalText(file, "status.health.gapViewCulling", command.statusHealthGapViewCulling());
+
+        checks.optionalText(file, "status.statistics.title", command.statusStatisticsTitle());
+        checks.optionalText(file, "status.statistics.metricCell", command.statusStatisticsMetricCell());
+        checks.optionalText(file, "status.statistics.valueCell", command.statusStatisticsValueCell());
+        checks.optionalText(file, "status.statistics.noteCell", command.statusStatisticsNoteCell());
+        checks.optionalText(file, "status.statistics.metricModels",
+                command.statusStatisticsMetricModels());
+        checks.optionalText(file, "status.statistics.metricDecorations",
+                command.statusStatisticsMetricDecorations());
+        checks.optionalText(file, "status.statistics.metricVehicles",
+                command.statusStatisticsMetricVehicles());
+        checks.optionalText(file, "status.statistics.metricRegistered",
+                command.statusStatisticsMetricRegistered());
+        checks.optionalText(file, "status.statistics.metricSimulations",
+                command.statusStatisticsMetricSimulations());
+        checks.optionalText(file, "status.statistics.metricDrivers",
+                command.statusStatisticsMetricDrivers());
+        checks.optionalText(file, "status.statistics.metricRigs", command.statusStatisticsMetricRigs());
+        checks.optionalText(file, "status.statistics.metricRigBones",
+                command.statusStatisticsMetricRigBones());
+        checks.optionalText(file, "status.statistics.metricPosedBones",
+                command.statusStatisticsMetricPosedBones());
+        checks.optionalText(file, "status.statistics.metricSimulationRate",
+                command.statusStatisticsMetricSimulationRate());
+        checks.optionalText(file, "status.statistics.metricEmissionRate",
+                command.statusStatisticsMetricEmissionRate());
+        checks.optionalText(file, "status.statistics.metricTransformRate",
+                command.statusStatisticsMetricTransformRate());
+        checks.optionalText(file, "status.statistics.metricInputBindings",
+                command.statusStatisticsMetricInputBindings());
+        checks.optionalText(file, "status.statistics.metricInputIssues",
+                command.statusStatisticsMetricInputIssues());
+        checks.optionalText(file, "status.statistics.noteVehicleEntries",
+                command.statusStatisticsNoteVehicleEntries());
+        checks.optionalText(file, "status.statistics.noteEmissionWindow",
+                command.statusStatisticsNoteEmissionWindow());
+        checks.optionalText(file, "status.statistics.noteTransformRate",
+                command.statusStatisticsNoteTransformRate());
+        checks.optionalText(file, "status.statistics.noteRedispatchPending",
+                command.statusStatisticsNoteRedispatchPending());
+        checks.optionalText(file, "status.statistics.summary", command.statusStatisticsSummary());
     }
 
     /**
@@ -2368,6 +2817,12 @@ public final class ConfigMapper {
     /**
      * The limits a vehicle profile is validated against.
      *
+     * <p>Through the canonical constructor with the terrain ceilings nested inside, which is what
+     * {@link VehicleBounds} carries rather than six flattened copies — one bounds object is checked
+     * against one profile object, component for component, so {@code VehicleProfile.requireWithin}
+     * validates a whole profile in one call. {@link VehicleBounds#withoutTerrain} is the api's
+     * compatibility form for a configuration that declares no terrain ceilings; this file now does.
+     *
      * @param vehicle the loaded configuration
      * @return the bounds
      */
@@ -2376,7 +2831,28 @@ public final class ConfigMapper {
                 vehicle.maxSpeedBlocksPerTick(),
                 vehicle.maxAccelerationBlocksPerTickSquared(),
                 vehicle.maxTurnRateDegreesPerTick(),
-                vehicle.maxBoostMultiplier());
+                vehicle.maxBoostMultiplier(),
+                terrainBounds(vehicle));
+    }
+
+    /**
+     * How far any vehicle on this server may lean, pitch and climb.
+     *
+     * <p>The operator's half of the terrain negotiation, exactly as {@link VehicleBounds} is of the
+     * speeds. A plugin cannot know how far a lean reads as broken on a given server, so it does not get
+     * to decide it.
+     *
+     * @param vehicle the validated configuration
+     * @return the terrain ceilings
+     */
+    private static @NotNull TerrainBounds terrainBounds(@NotNull VehicleSettings vehicle) {
+        return new TerrainBounds(
+                vehicle.terrainMaxBankDegrees(),
+                vehicle.terrainMaxSlopePitchDegrees(),
+                vehicle.terrainMaxAccelerationPitchDegrees(),
+                vehicle.terrainMaxStepHeightBlocks(),
+                vehicle.terrainMaxStepDurationTicks(),
+                vehicle.terrainMinAngleBlendPerTick());
     }
 
     /**
@@ -2393,7 +2869,83 @@ public final class ConfigMapper {
                 vehicle.maxStepTicks(),
                 vehicle.maxLocalStepBlocks(),
                 vehicle.restSpeedBlocksPerTick(),
-                seatSettings(vehicle));
+                seatSettings(vehicle),
+                terrainDefaults(vehicle),
+                terrainSampling(vehicle));
+    }
+
+    /**
+     * How often a vehicle may read the blocks under it.
+     *
+     * <p>Assembled here rather than in the vehicle layer's settings source for the reason
+     * {@link #seatSettings} and {@link #terrainDefaults} are: the snapshot stores the object whole, so
+     * the source hands it through and its identity is stable for as long as the configuration behind it
+     * is. A source that rebuilt it per read would hand a fresh object to every step.
+     *
+     * @param vehicle the validated configuration
+     * @return the sampling rules
+     */
+    private static @NotNull pandastic.studio.models.internal.vehicle.TerrainSampling terrainSampling(
+            @NotNull VehicleSettings vehicle
+    ) {
+        return new pandastic.studio.models.internal.vehicle.TerrainSampling(
+                vehicle.terrainSampleMoveDeadbandBlocks(),
+                vehicle.terrainSampleTurnDeadbandDegrees(),
+                vehicle.terrainSampleMinIntervalTicks(),
+                vehicle.terrainSampleMaxAgeTicks(),
+                vehicle.terrainSampleOnlyWhenSeen());
+    }
+
+    /**
+     * The terrain response each vehicle kind inherits when a profile declares none of its own.
+     *
+     * <p>Assembled here rather than in the vehicle layer's settings source so that the snapshot stores
+     * the object whole — the same reasoning {@link #seatSettings} carries: a source that rebuilt it per
+     * read would hand a consumer a fresh object every time, and a consumer comparing it by identity would
+     * conclude the configuration had changed on every call.
+     *
+     * <h2>Why the terms a kind ignores are zero rather than configurable</h2>
+     * They are identity values, not tunables. A ground vehicle takes its pitch from the hill it is on, so
+     * a key for its acceleration pitch would be a key nothing reads; the three water and air kinds have
+     * no surface beneath them, so a slope, a step height and a climb duration would be the same. The
+     * duration is written as {@code 1} rather than {@code 0} because {@code TerrainResponse} refuses a
+     * climb shorter than the tick it is applied in — with no height to climb, one tick is the structural
+     * minimum and means nothing more than "no climb".
+     *
+     * @param vehicle the validated configuration
+     * @return the per-kind defaults
+     */
+    private static @NotNull pandastic.studio.models.internal.vehicle.VehicleSettings.TerrainDefaults
+            terrainDefaults(@NotNull VehicleSettings vehicle) {
+        return new pandastic.studio.models.internal.vehicle.VehicleSettings.TerrainDefaults(
+                new TerrainResponse(
+                        vehicle.defaultGroundBankDegrees(),
+                        vehicle.defaultGroundSlopePitchDegrees(),
+                        0F,
+                        vehicle.defaultGroundStepHeightBlocks(),
+                        vehicle.defaultGroundStepDurationTicks(),
+                        vehicle.defaultGroundAngleBlendPerTick()),
+                new TerrainResponse(
+                        vehicle.defaultFlyerBankDegrees(),
+                        0F,
+                        vehicle.defaultFlyerAccelerationPitchDegrees(),
+                        0F,
+                        1,
+                        vehicle.defaultFlyerAngleBlendPerTick()),
+                new TerrainResponse(
+                        vehicle.defaultSubmarineBankDegrees(),
+                        0F,
+                        vehicle.defaultSubmarineAccelerationPitchDegrees(),
+                        0F,
+                        1,
+                        vehicle.defaultSubmarineAngleBlendPerTick()),
+                new TerrainResponse(
+                        vehicle.defaultBoatBankDegrees(),
+                        0F,
+                        vehicle.defaultBoatAccelerationPitchDegrees(),
+                        0F,
+                        1,
+                        vehicle.defaultBoatAngleBlendPerTick()));
     }
 
     /**
@@ -2658,7 +3210,91 @@ public final class ConfigMapper {
                 command.reloadRefusedMessage(),
                 command.reloadDiagnosticLine(),
                 command.reloadBusyMessage(),
-                command.reloadFailedMessage());
+                command.reloadFailedMessage(),
+                statusSettings(command));
+    }
+
+    /**
+     * Every line the two status commands say, as one value.
+     *
+     * <p>A nested record rather than more components on {@link #commandSettings}, unlike the rest of this
+     * file's one-component-per-key mappings: the status section alone is more keys than every other
+     * command line put together, and the three groups below — the box, the health report, the statistics
+     * report — are read by different methods of the reporter. Grouping them is what lets
+     * {@code StatusReport.health} take the health labels and nothing else.
+     *
+     * <p>Carried whole by the snapshot through the command settings, so {@code ConfigService::command}
+     * keeps satisfying the command layer's source directly and with a stable identity.
+     *
+     * @param command the validated configuration
+     * @return the status settings
+     */
+    private static @NotNull StatusSettings statusSettings(@NotNull CommandSettings command) {
+        return new StatusSettings(
+                command.statusVerbose(),
+                command.statusShowKnownGaps(),
+                new StatusSettings.Box(
+                        command.statusBoxTop(),
+                        command.statusBoxRowPrefix(),
+                        command.statusBoxBottom(),
+                        command.statusBoxColumnGap()),
+                new StatusSettings.Health(
+                        command.statusHealthTitle(),
+                        command.statusHealthPartCell(),
+                        command.statusHealthStateOk(),
+                        command.statusHealthStateDegraded(),
+                        command.statusHealthStateDown(),
+                        command.statusHealthVerdictHealthy(),
+                        command.statusHealthVerdictDegraded(),
+                        command.statusHealthVerdictFaulted(),
+                        command.statusHealthPartRenderer(),
+                        command.statusHealthPartConfiguration(),
+                        command.statusHealthPartRigs(),
+                        command.statusHealthPartSimulation(),
+                        command.statusHealthPartDrivers(),
+                        command.statusHealthPartAi(),
+                        command.statusHealthPartInput(),
+                        command.statusHealthRendererActive(),
+                        command.statusHealthRendererMissing(),
+                        command.statusHealthConfigurationLive(),
+                        command.statusHealthConfigurationTrouble(),
+                        command.statusHealthRigsLoaded(),
+                        command.statusHealthLoopRunning(),
+                        command.statusHealthLoopStopped(),
+                        command.statusHealthLoopRedispatch(),
+                        command.statusHealthAiActive(),
+                        command.statusHealthAiUnavailable(),
+                        command.statusHealthInputActive(),
+                        command.statusHealthInputDegraded(),
+                        command.statusHealthSummary(),
+                        command.statusHealthGapLine(),
+                        command.statusHealthGapEmissionMetrics(),
+                        command.statusHealthGapRigDiagnostics(),
+                        command.statusHealthGapViewCulling()),
+                new StatusSettings.Statistics(
+                        command.statusStatisticsTitle(),
+                        command.statusStatisticsMetricCell(),
+                        command.statusStatisticsValueCell(),
+                        command.statusStatisticsNoteCell(),
+                        command.statusStatisticsMetricModels(),
+                        command.statusStatisticsMetricDecorations(),
+                        command.statusStatisticsMetricVehicles(),
+                        command.statusStatisticsMetricRegistered(),
+                        command.statusStatisticsMetricSimulations(),
+                        command.statusStatisticsMetricDrivers(),
+                        command.statusStatisticsMetricRigs(),
+                        command.statusStatisticsMetricRigBones(),
+                        command.statusStatisticsMetricPosedBones(),
+                        command.statusStatisticsMetricSimulationRate(),
+                        command.statusStatisticsMetricEmissionRate(),
+                        command.statusStatisticsMetricTransformRate(),
+                        command.statusStatisticsMetricInputBindings(),
+                        command.statusStatisticsMetricInputIssues(),
+                        command.statusStatisticsNoteVehicleEntries(),
+                        command.statusStatisticsNoteEmissionWindow(),
+                        command.statusStatisticsNoteTransformRate(),
+                        command.statusStatisticsNoteRedispatchPending(),
+                        command.statusStatisticsSummary()));
     }
 
     /**

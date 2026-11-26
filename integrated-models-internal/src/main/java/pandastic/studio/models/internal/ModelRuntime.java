@@ -28,6 +28,7 @@ import pandastic.studio.models.internal.decoration.DecorationBinderImpl;
 import pandastic.studio.models.internal.decoration.DecorationDriverLoop;
 import pandastic.studio.models.internal.decoration.DecorationSettings;
 import pandastic.studio.models.internal.decoration.DecorationSettingsSource;
+import pandastic.studio.models.internal.input.InputFaultSink;
 import pandastic.studio.models.internal.input.InputRuntime;
 import pandastic.studio.models.internal.nms.MovementBridge;
 import pandastic.studio.models.internal.nms.NmsBridge;
@@ -59,6 +60,14 @@ import pandastic.studio.models.internal.vehicle.VehicleHostFactory;
 import pandastic.studio.models.internal.vehicle.VehicleSettings;
 import pandastic.studio.models.internal.vehicle.VehicleSettingsSource;
 import pandastic.studio.models.internal.vehicle.VehicleVisualFactory;
+import pandastic.studio.models.internal.view.ViewLoop;
+// The view layer's own value type, not internal.config.ViewSettings — which declares view.yml's keys and
+// is deliberately named the same. This module never names the declaration; what it reads is the snapshot.
+import pandastic.studio.models.internal.view.ViewSettings;
+import pandastic.studio.models.internal.view.ViewSettingsSource;
+import pandastic.studio.models.internal.view.ViewerIndex;
+import pandastic.studio.models.internal.view.ViewerPublisher;
+import pandastic.studio.models.internal.view.ViewerSampler;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -160,6 +169,21 @@ final class ModelRuntime {
 
     private final @NotNull SimulationLoop loop;
     private final @NotNull DecorationDriverLoop drivers;
+
+    /**
+     * The per-viewer culler's loop, and the index the platform samplers fill for it.
+     *
+     * <p>The third off-tick loop, and the only one that <em>reduces</em> the work the other two do: its
+     * pass ends by taking every model no viewer holds off the simulation loop. It is built here, after
+     * the two loops it depends on knowing about and before the binders, because it reads the binders'
+     * own live collections rather than keeping a registry — see
+     * {@link pandastic.studio.models.internal.view.CullableModelSource}.
+     */
+    private final @NotNull ViewLoop view;
+
+    private final @NotNull ViewerIndex viewers;
+    private final @NotNull ViewerPublisher viewerSampler;
+
     private final @NotNull ModelBinderImpl models;
     private final @NotNull DecorationBinderImpl decorations;
     private final @NotNull VehicleBinderImpl vehicles;
@@ -247,7 +271,46 @@ final class ModelRuntime {
                 // still return null and retain their physics-only behaviour.
                 new DerivedLocomotionStageSource(configs),
                 ai,
-                inputs);
+                inputs,
+                // The viewer sampler is the only platform-bound part of the view layer, so it is the
+                // only part this factory has to supply. Its index belongs to the runtime, which is why
+                // the sampler is built from one the constructor hands back rather than owning its own;
+                // see the two-pass note above, which this is the second instance of.
+                ViewerSampling.plugin(plugin, configs));
+    }
+
+    /**
+     * How a {@link ViewerSampler} is built once the index it publishes into exists.
+     *
+     * <p>A function rather than a finished object because the index is the runtime's: handing the
+     * constructor a sampler that already owned one would give the culler a second, empty index and a
+     * server on which nothing is ever visible. The pairing has to happen inside the constructor, and this
+     * is the narrowest shape that lets the platform decide <em>which</em> publisher without deciding what
+     * it publishes into.
+     */
+    @FunctionalInterface
+    interface ViewerSampling {
+
+        /** Builds the publisher that fills {@code index}. */
+        @NotNull ViewerPublisher samplerFor(@NotNull ViewerIndex index);
+
+        /** The real one: a repeating task per player, on that player's own scheduler. */
+        static @NotNull ViewerSampling plugin(
+                @NotNull Plugin plugin,
+                @NotNull ConfigService configs
+        ) {
+            Objects.requireNonNull(plugin, "plugin");
+            Objects.requireNonNull(configs, "configs");
+            // configs::view satisfies the view layer's source directly and allocation-free, because the
+            // snapshot stores that value whole — the same property binding() and clips() have, and the
+            // reason none of the three needs the memoisation simulationSource(...) does.
+            return index -> new ViewerSampler(plugin, SimulationClock.SYSTEM, configs::view, index);
+        }
+
+        /** A runtime with no platform under it. See {@link ViewerPublisher#NONE}. */
+        static @NotNull ViewerSampling none() {
+            return index -> ViewerPublisher.NONE;
+        }
     }
 
     /**
@@ -278,6 +341,11 @@ final class ModelRuntime {
      * @param validator         the offline rig check every binder runs before it hands out a handle
      * @param locomotion        the walk cycle for a rig, or {@link LocomotionStageSource#NONE}
      * @param ai                the AI layer, or the reason there is none
+     * @param inputs            the input layer, where every rider's keys are observed
+     * @param viewerSampling    how players become entries in the view index. The one platform-bound part
+     *                          of the view layer; {@link ViewerSampling#none()} for a runtime with no
+     *                          server under it, which culls against an empty index and therefore treats
+     *                          every model as unseen
      */
     ModelRuntime(
             @NotNull ComponentLogger logger,
@@ -293,7 +361,8 @@ final class ModelRuntime {
             @NotNull RigBindValidator validator,
             @NotNull LocomotionStageSource locomotion,
             @NotNull AiRuntime ai,
-            @NotNull InputRuntime inputs
+            @NotNull InputRuntime inputs,
+            @NotNull ViewerSampling viewerSampling
     ) {
         this.logger = Objects.requireNonNull(logger, "logger");
         this.configs = Objects.requireNonNull(configs, "configs");
@@ -314,6 +383,15 @@ final class ModelRuntime {
         this.drivers = new DecorationDriverLoop(
                 scheduler, clock, this.decorationSettings, this.simulationSettings);
 
+        //    The third loop, and the index it decides from. configs::view satisfies the view layer's
+        //    source directly and allocation-free, because the snapshot stores that value whole.
+        this.viewers = new ViewerIndex();
+        this.viewerSampler = Objects.requireNonNull(
+                Objects.requireNonNull(viewerSampling, "viewerSampling").samplerFor(this.viewers),
+                "viewerSampling.samplerFor");
+        final ViewSettingsSource viewSettings = configs::view;
+        this.view = new ViewLoop(scheduler, clock, simulationLogger, viewSettings, this.viewers);
+
         // 2. The binders. The model binder comes before the vehicle binder and that is not cosmetic: a
         //    vehicle's visual is a model bound through VehicleVisualFactory.binding(ModelBinder), so the
         //    vehicle layer is built *on* the binding layer and cannot be constructed before it. It is
@@ -333,10 +411,27 @@ final class ModelRuntime {
         // else. That fallback is honest for a server with no input layer, but this one has one, and a
         // vehicle built on the fallback can never see an action input or answer a combination — so the
         // whole published input api would be unreachable from the one place that most wants it.
+        // The consumer's VehicleController is handed the input layer's own fault policy, built from
+        // input.yml's two fault keys. A controller is consumer code reacting to rider input from inside
+        // a scheduled body, which is exactly the situation those keys describe, so it is contained,
+        // throttled and eventually detached by one policy rather than by a second one that could drift.
+        // A second *instance* of that policy is correct: the counters are keyed by what failed, and a
+        // controller and an input binding are never the same thing.
         this.vehicles = new VehicleBinderImpl(hosts, VehicleVisualFactory.binding(this.models),
                 this.vehicleSettings, clock, simulationLogger,
                 SeatChartSink.component(logger), this.modelManager,
-                RiderInputSource.of(this.inputs.controller()));
+                RiderInputSource.of(this.inputs.controller()),
+                InputFaultSink.throttled(configs::input, clock,
+                        (message, failure) -> logger.error(
+                                Component.text(message, NamedTextColor.RED), failure)));
+
+        // 3. The culler's model sources, once the binders exist. Two and not three: a vehicle's visual is
+        //    a model the model binder handed out, so it is already in the first of these — and a vehicle
+        //    root is a platform entity the server tracks on its own terms, which is not ours to cull.
+        //    Each binder's own membership is the authority rather than a registry here; see
+        //    CullableModelSource for why a second copy of it would drift.
+        this.view.addSource(this.models::boundModels);
+        this.view.addSource(this.decorations::boundDecorations);
 
         this.rigFactory = RigFactory.of(this::rigs, ModelBoneSource.renderer(), this::rigLoadSettings);
         loadRigs();
@@ -356,6 +451,14 @@ final class ModelRuntime {
     void start() {
         this.loop.start();
         this.drivers.start();
+
+        // The samplers before the pass, and that order is the one thing here that matters: a pass over
+        // an empty index decides that every model is held by nobody and suspends all of them. The next
+        // pass repairs it, so this is a visible stutter rather than a fault — which is exactly the kind
+        // of thing that survives review by not being noticed.
+        this.viewerSampler.start();
+        this.view.start();
+
         // Says its own capability line, including the sentence naming what a server without an adapter
         // loses, so there is nothing to report about it here.
         this.inputs.start();
@@ -364,6 +467,11 @@ final class ModelRuntime {
         this.logger.info(Component.text("Simulating at " + this.loop.simulationHz()
                 + " Hz, emitting at " + cadence.emissionHz() + " Hz with a "
                 + cadence.interpolationTicks() + "-tick interpolation window"));
+
+        final ViewSettings culling = this.configs.view();
+        this.logger.info(Component.text("Culling per viewer every " + culling.sampleIntervalTicks()
+                + " tick(s) within " + culling.viewRangeBlocks() + " blocks, omnidirectional inside "
+                + culling.nearRadiusBlocks() + "; a model no viewer holds is not simulated"));
 
         // Logged once, and as a warning rather than an error: the rendering pipeline does not need NMS,
         // so this is a reduced feature set rather than a fault. An operator asking why the AI service is
@@ -414,9 +522,16 @@ final class ModelRuntime {
         }
         this.stopped = true;
 
-        // 1. Nothing may still be stepping.
+        // 1. Nothing may still be stepping. The view loop with them, and before the three despawnAll()
+        //    calls below: a pass in flight writes a model's viewport and its stepping flag, and a pass
+        //    that landed on a handle mid-teardown would be deciding visibility for a model that is
+        //    already gone. Its own per-player samplers go with it, because an entity-scheduled repeating
+        //    task is never swept for a plugin and a live one fails on its first class load after the
+        //    classloader closes — which is why this is here and not after the world is emptied.
         this.loop.stop();
         this.drivers.stop();
+        this.view.stop();
+        final int stoppedSamplers = this.viewerSampler.stop();
 
         // 2. The input layer, before the world rather than after it. Stopping it closes every binding,
         //    and a binding is a consumer's handler: it may touch a vehicle, and it can be dispatched
@@ -437,7 +552,8 @@ final class ModelRuntime {
 
         this.logger.info(Component.text("Stopped: " + stoppedModels + " model(s), "
                 + stoppedDecorations + " decoration(s), " + stoppedVehicles + " vehicle(s), "
-                + uninstalled + " AI installation(s), " + closedBindings + " input binding(s)"));
+                + uninstalled + " AI installation(s), " + closedBindings + " input binding(s), "
+                + stoppedSamplers + " viewer sampler(s)"));
     }
 
     /** Whether {@link #shutdown()} has run. */
@@ -472,6 +588,28 @@ final class ModelRuntime {
         return this.drivers;
     }
 
+    /**
+     * The per-viewer culler's loop.
+     *
+     * <p>Here for the reason {@link #drivers()} is — the shutdown and reload sequences name it and a test
+     * asserting those has to see whether it is running — and for one more: {@link ViewLoop#lastResult()}
+     * is the only place the saving this layer produces is a number. A health or statistics report asking
+     * "is culling doing anything" reads it from there.
+     */
+    @NotNull ViewLoop view() {
+        return this.view;
+    }
+
+    /** Where every viewer's sampled eye and look are published. */
+    @NotNull ViewerIndex viewers() {
+        return this.viewers;
+    }
+
+    /** What keeps {@link #viewers()} filled. */
+    @NotNull ViewerPublisher viewerSampler() {
+        return this.viewerSampler;
+    }
+
     /** The live configuration. */
     @NotNull ConfigService configs() {
         return this.configs;
@@ -495,6 +633,20 @@ final class ModelRuntime {
     /** The AI service, if this server has an NMS adapter. */
     @NotNull Optional<CreatureAi> creatureAi() {
         return this.ai.creatureAi();
+    }
+
+    /**
+     * Why there is no AI service, as one sentence naming the server version and every adapter that was
+     * passed over; blank when there is one.
+     *
+     * <p>Exposed beside {@link #creatureAi()} because {@link #start()} logs it exactly once, at enable,
+     * and an operator asking a week later why the AI layer is off has no other way to find out which of
+     * the reasons it was. The health command reads it from here rather than re-running
+     * {@link NmsBridgeLookup#resolve}, which would repeat a {@link java.util.ServiceLoader} scan per
+     * invocation and could build a second adapter.
+     */
+    @NotNull String aiUnavailableReason() {
+        return this.ai.unavailableReason();
     }
 
     /**
@@ -632,12 +784,20 @@ final class ModelRuntime {
         final int samplers = this.models.reload();
         final int controls = this.vehicles.reload();
         final boolean redispatchedDrivers = this.drivers.reload();
+        // The view layer owns two of the five repeating rates: the pass and every per-player sampler.
+        // Both come from the same key, so a change moves both, and leaving either out would be the
+        // silent half-application this method's documentation is about.
+        final boolean redispatchedView = this.view.reload();
+        final int viewerSamplers = this.viewerSampler.reload();
 
-        if (rebuilt > 0 || samplers > 0 || controls > 0 || redispatchedDrivers) {
+        if (rebuilt > 0 || samplers > 0 || controls > 0 || redispatchedDrivers
+                || redispatchedView || viewerSamplers > 0) {
             this.logger.info(Component.text("Re-dispatched for the new configuration: "
                     + rebuilt + " simulation(s), " + samplers + " sampler(s), "
-                    + controls + " vehicle control loop(s)"
-                    + (redispatchedDrivers ? ", the decoration driver loop" : "")));
+                    + controls + " vehicle control loop(s), "
+                    + viewerSamplers + " viewer sampler(s)"
+                    + (redispatchedDrivers ? ", the decoration driver loop" : "")
+                    + (redispatchedView ? ", the view culling loop" : "")));
         }
 
         this.rigs.clear();
@@ -762,7 +922,13 @@ final class ModelRuntime {
                     // Handed through rather than rebuilt: the snapshot stores the seat settings whole,
                     // which is what keeps this bundle's own identity stable across two reads with the
                     // configuration unchanged.
-                    options.seats());
+                    options.seats(),
+                    options.terrainDefaults(),
+                    // The same, and for the same reason. Without this argument the bundle would default
+                    // to TerrainSampling.EVERY_STEP and the terrain.sample* keys would be inert: every
+                    // vehicle would read the blocks under it on every control step, which is the cost
+                    // those keys exist to bound.
+                    options.terrainSampling());
         });
         return () -> cache.of(configs.snapshot());
     }

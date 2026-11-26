@@ -60,6 +60,74 @@ public interface VehicleVisual {
     boolean isAlive();
 
     /**
+     * Rotates the whole model, as the terrain layer decided it should sit.
+     *
+     * <h2>Why there is a per-step method here after all, and why it is not a second writer</h2>
+     * The class note above refuses a per-step <em>pose</em> method, and this is not one. A pose is a
+     * per-bone rotation written through {@link pandastic.studio.models.api.render.PoseSink}, and the
+     * binding layer's sampler is its single writer. This is the <em>whole-model</em> rotation, which the
+     * renderer applies to the model's displays outside their transformations — a different operation
+     * reaching the client through different fields of a different packet. Nothing else in a vehicle's
+     * lifetime writes it, so the control step is its only writer and there is no interleaving to reason
+     * about.
+     *
+     * <p>Which also means the rig invariant is untouched: no bone leaves its pivot, because no bone is
+     * addressed at all.
+     *
+     * <h2>The yaw has to be supplied, and that is not redundant</h2>
+     * It looks redundant, because the control step has just written the same heading to the root entity.
+     * It is not: setting a whole-model rotation <strong>replaces</strong> the renderer's own body
+     * rotation, which is what was making the model follow the entity's heading. A caller that supplied
+     * only a pitch would get a model that pitches correctly and then stops turning, with nothing to point
+     * at. So this layer supplies the whole rotation, which it is entitled to do — it is authoritative
+     * about the heading.
+     *
+     * <p>The corollary is that this must not be called at all by a vehicle whose terrain response is
+     * inert. Taking over the body rotation to hand it back the value it already had is a trade of the
+     * renderer's own smoothing for nothing.
+     *
+     * <p>Owning thread only, like everything else in a control step.
+     *
+     * @param pitchDegrees how far to pitch the model, in the sign the server measures pitch in: negative
+     *                     is nose up
+     * @param yawDegrees   the heading, which is the vehicle's own
+     * @param rollDegrees  how far to roll the model, positive with its right side down. Accepted even by
+     *                     a backend that cannot express it: a bank that cannot be shown is a model that
+     *                     renders upright, and refusing the whole rotation over it would cost the pitch
+     *                     and the heading too. See {@link RiggedVehicleVisual} for what the shipped
+     *                     backend does with it and why
+     */
+    default void setBodyRotation(float pitchDegrees, float yawDegrees, float rollDegrees) {
+        // A vehicle with no model has nothing to rotate.
+    }
+
+    /**
+     * Whether any viewer currently holds this model.
+     *
+     * <h2>What it is for, and why it is on this seam</h2>
+     * The terrain reaction is the one part of a vehicle that reads <strong>blocks</strong>, and it exists
+     * entirely for the benefit of somebody looking at the model: a lean, a pitch and a step up. So a
+     * vehicle no viewer holds should read no blocks, and the place that knows who holds a model is the
+     * place that holds the model. See {@link TerrainSampling#onlyWhenSeen()} for the operator's switch
+     * and for the one thing it costs.
+     *
+     * <p>The default is {@code true}, and that is the safe direction rather than the convenient one. A
+     * visual that cannot answer the question — a vehicle with no model at all, a backend with no culler
+     * — says "assume somebody can see it", so the sampling falls back to the deadband and the interval
+     * instead of silently switching the terrain reaction off. The failure a {@code false} default would
+     * produce is a vehicle that never reacts to the ground on a server where nothing tracks viewers, and
+     * nothing in a test would notice.
+     *
+     * <p>Readable from the thread that owns the root entity, which is where a control step asks it. It is
+     * one read of a concurrent set's size on the shipped backend, published by the culler's own pass.
+     *
+     * @return whether at least one viewer has this model's bones
+     */
+    default boolean hasViewers() {
+        return true;
+    }
+
+    /**
      * The locators of the spawned model, which is where this vehicle's seats are.
      *
      * <p>Asked once, by {@link VehicleImpl#start()} and <strong>after</strong> {@link #spawn()}: a locator

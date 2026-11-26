@@ -38,6 +38,7 @@ final class FakeAnchor implements ModelAnchor {
     private @Nullable FakeAnchorTask task;
     private long periodTicks;
     private int scheduleCount;
+    private int reads;
     private @Nullable Runnable onSchedule;
 
     private double x;
@@ -55,11 +56,29 @@ final class FakeAnchor implements ModelAnchor {
 
     @Override
     public boolean readInto(@NotNull AnchorSample sample) {
+        this.reads++;
         if (!this.alive) {
             return false;
         }
         sample.set(this.x, this.y, this.z, this.yawDegrees, this.sneaking, this.airborne);
         return true;
+    }
+
+    /**
+     * How many times the anchor has been read.
+     *
+     * <p>Counted rather than journalled, because a read is the one call this fake receives that is not an
+     * ordering fact. It is a <em>cost</em> fact: a read is the only thing a bound model does that has to
+     * touch the entity, and on a non-regionised server it happens on the main thread. So the number of
+     * them per tick is a figure worth asserting, and the number of them per simulation step has to stay
+     * zero — see {@code ModelSamplerCostTest}.
+     */
+    int reads() {
+        return this.reads;
+    }
+
+    void clearReads() {
+        this.reads = 0;
     }
 
     @Override

@@ -1,6 +1,7 @@
 package pandastic.studio.models.internal.sim;
 
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import pandastic.studio.models.api.physics.DriverBounds;
 import pandastic.studio.models.api.physics.PhysicsDriver;
 
@@ -55,6 +56,35 @@ public final class DriverSampler {
     private boolean seeded;
 
     /**
+     * The answer for "the anchor is exactly where it was", built once and handed out from then on.
+     *
+     * <h2>Why an unmoved anchor is worth a field</h2>
+     * Because this is the most-multiplied piece of work in the plugin: one sample per bound model per
+     * tick, on a region thread — which on a non-regionised server is the main thread. Measured, the
+     * sample cost 32 bytes and two trigonometric calls <em>whether or not the anchor had moved</em>, and
+     * a stationary model is the common case on a server with hundreds of them: a decoration, a mob
+     * standing still, anything parked. Differencing a position against itself to discover that nothing
+     * happened is the entire cost of the sampling path for every one of them.
+     *
+     * <p>So an unchanged position short-circuits before the arithmetic. This is the pattern
+     * {@link pandastic.studio.models.internal.decoration.DecorationDriverLoop} already applies to a
+     * decoration nobody moved — compare the input, answer a constant — applied to the other side of the
+     * same seam.
+     *
+     * <h2>Why it is not {@link PhysicsDriver#STILL}</h2>
+     * Because {@code STILL} is load-bearing by <em>identity</em> one layer up:
+     * {@link pandastic.studio.models.internal.binding.RiggedModelImpl} distinguishes "this sampler had
+     * nothing to difference against" from "the anchor reported no movement" by comparing against that
+     * exact instance, and uses the first to decide whether a velocity fallback applies. Answering the
+     * singleton here would silently change that decision. An equal instance of this sampler's own
+     * therefore is the answer, and no identity anywhere else moves.
+     *
+     * <p>Built lazily rather than in the constructor so that a sampler belonging to a model that never
+     * stops moving never builds one.
+     */
+    private @Nullable PhysicsDriver unmoved;
+
+    /**
      * @param settings where the teleport thresholds are read from, once per sample
      */
     public DriverSampler(@NotNull SimulationSettingsSource settings) {
@@ -78,6 +108,22 @@ public final class DriverSampler {
             this.seeded = true;
             store(x, y, z, yawDegrees);
             return PhysicsDriver.STILL;
+        }
+
+        // Nothing moved, so there is nothing to difference: four primitive comparisons instead of three
+        // subtractions, a wrap, a sine, a cosine, a teleport test and a record. See #unmoved for why
+        // this is the case worth catching and why the answer is not the shared STILL.
+        //
+        // Before the previous position is overwritten, and it does not need to be: it is already equal
+        // to the one being sampled, so skipping the store leaves the state identical.
+        if (x == this.previousX && y == this.previousY && z == this.previousZ
+                && yawDegrees == this.previousYawDegrees) {
+            PhysicsDriver still = this.unmoved;
+            if (still == null) {
+                still = new PhysicsDriver(0F, 0F, 0F, 0F);
+                this.unmoved = still;
+            }
+            return still;
         }
 
         // One read for the whole sample: the horizontal and vertical thresholds are applied together
@@ -109,6 +155,9 @@ public final class DriverSampler {
      */
     public void reset() {
         this.seeded = false;
+        // Kept, not dropped. It is a constant — four zeroes — rather than anything about the binding
+        // that has just ended, so there is nothing stale in it and rebuilding it would be the one
+        // allocation this field exists to remove.
     }
 
     /** Whether a position has been remembered yet. */

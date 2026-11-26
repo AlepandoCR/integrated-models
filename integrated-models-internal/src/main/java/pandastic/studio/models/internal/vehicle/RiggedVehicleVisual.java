@@ -3,6 +3,7 @@ package pandastic.studio.models.internal.vehicle;
 import org.bukkit.entity.Entity;
 import org.jetbrains.annotations.NotNull;
 import pandastic.studio.models.api.binding.RiggedModel;
+import pandastic.studio.models.internal.view.CullableModel;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -56,6 +57,54 @@ public final class RiggedVehicleVisual implements VehicleVisual {
     @Override
     public boolean isAlive() {
         return this.model.isAlive();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <h2>The roll is carried to here and dropped, and that is a backend limit rather than a decision</h2>
+     * {@link pandastic.studio.models.api.model.Model#setRotation(float, float)} is the whole-model
+     * rotation this project's rendering seam exposes, and it takes a pitch and a yaw. It takes two
+     * because the shipped renderer's own whole-model rotation is two: a pitch and a yaw, packed as the
+     * two rotation bytes an entity's orientation travels in. There is no third component to put a roll
+     * in.
+     *
+     * <p>The two places a roll could otherwise go were both considered and both are worse. Writing it as
+     * a rotation on the rig's root bone would express it correctly — a root bone's rotation <em>is</em> a
+     * whole-model roll, and it breaks no rig invariant because it moves no bone off its pivot — but it
+     * would make the vehicle's control step a second writer into the pose the binding layer's sampler
+     * owns, which is the one thing {@link VehicleVisual}'s own note refuses outright. Adding a third
+     * angle to the rendering seam would push a component into the published api that the only shipped
+     * backend must then silently discard, which is a worse lie than discarding it here where the reason
+     * is written down.
+     *
+     * <p>So a banking vehicle pitches and turns and renders upright on this backend. The angle is still
+     * computed, still blended, still bounded and still tested, and a backend whose whole-model rotation
+     * has three components needs no change above this line.
+     */
+    @Override
+    public void setBodyRotation(float pitchDegrees, float yawDegrees, float rollDegrees) {
+        this.model.setRotation(pitchDegrees, yawDegrees);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Answered from the model's own viewport, which is the culler's published state and the only
+     * authority on who holds a model. The handle is the published {@link RiggedModel} interface and the
+     * viewport is an internal concern, so the capability is asked for rather than assumed: a model that
+     * is not a {@link CullableModel} is not tracked by the culler, which means nothing is taking viewers
+     * away from it and the honest answer is that it is seen.
+     *
+     * <p>A model that is cullable but <em>not</em> culled — one no viewer has reached yet, or one the
+     * culler has suspended — reports no viewers, and that is the answer this is for: it is the same state
+     * the culler uses to take the model's simulation off the loop, so a vehicle reading no blocks for it
+     * is consistent with the model not being posed either.
+     */
+    @Override
+    public boolean hasViewers() {
+        return !(this.model instanceof CullableModel cullable)
+                || cullable.viewport().shownCount() > 0;
     }
 
     @Override

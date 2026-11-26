@@ -150,7 +150,11 @@ final class RuntimeFixtures {
                 RigBindValidator.over(modelBoneNames(), renderSettings),
                 LocomotionStageSource.NONE,
                 ai,
-                inputs);
+                inputs,
+                // No server, so no player can be read and the view index stays empty. The culler
+                // consequently decides that nothing is held by anybody, which is the honest answer here;
+                // the view layer's own suite is where the decision and the gate are exercised.
+                ModelRuntime.ViewerSampling.none());
 
         return new Harness(runtime, configs, scheduler, brains, anchors, worlds, hosts);
     }

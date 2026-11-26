@@ -8,7 +8,10 @@ import pandastic.studio.models.api.rig.RigKind;
 import pandastic.studio.models.api.rig.RigSeat;
 import pandastic.studio.models.api.rig.SeatBounds;
 import pandastic.studio.models.api.vehicle.ControlScheme;
+import pandastic.studio.models.api.vehicle.TerrainBounds;
+import pandastic.studio.models.api.vehicle.TerrainResponse;
 import pandastic.studio.models.api.vehicle.VehicleBounds;
+import pandastic.studio.models.api.vehicle.VehicleKind;
 import pandastic.studio.models.api.vehicle.VehicleProfile;
 import pandastic.studio.models.internal.sim.SimulationClock;
 
@@ -28,7 +31,15 @@ final class VehicleFixtures {
     static final @NotNull ProfileBounds PROFILE_BOUNDS =
             new ProfileBounds(0.1F, 100F, 50F, 50F, 8F, 1F, 90F);
 
-    static final @NotNull VehicleBounds VEHICLE_BOUNDS = new VehicleBounds(2F, 1F, 45F, 4F);
+    /**
+     * Terrain ceilings wide enough for any response a test here describes, so that a refusal in these
+     * tests is about the layer under test rather than about the operator's angles.
+     */
+    static final @NotNull TerrainBounds TERRAIN_BOUNDS =
+            new TerrainBounds(30F, 25F, 20F, 1F, 8, 0.05F);
+
+    static final @NotNull VehicleBounds VEHICLE_BOUNDS =
+            new VehicleBounds(2F, 1F, 45F, 4F, TERRAIN_BOUNDS);
 
     /** Four seats and a blocks-sized trim, so neither ceiling is the thing a seat test is about. */
     static final @NotNull SeatBounds SEAT_BOUNDS = new SeatBounds(4, 2F);
@@ -111,6 +122,79 @@ final class VehicleFixtures {
                 .build();
     }
 
+    /**
+     * {@link #profile()} with a kind and a terrain response.
+     *
+     * <p>The speeds are the same, so a terrain assertion is never also an assertion about how fast the
+     * vehicle is: a full-rate turn is ten degrees a tick and full acceleration is a quarter of a block
+     * per tick squared, both of which make the fraction of a full-rate input exact rather than
+     * approximate.
+     *
+     * @param kind    the medium, which selects the terms honoured
+     * @param terrain the ceilings, which must be inside {@link #TERRAIN_BOUNDS}
+     */
+    static @NotNull VehicleProfile terrainProfile(
+            @NotNull VehicleKind kind,
+            @NotNull TerrainResponse terrain
+    ) {
+        return VehicleProfile.builder(VEHICLE_BOUNDS)
+                .forwardSpeed(1F)
+                .reverseSpeed(0.5F)
+                .acceleration(0.25F)
+                .braking(0.5F)
+                .friction(0.5F)
+                .turnRate(10F)
+                .kind(kind)
+                .terrain(terrain)
+                .build();
+    }
+
+    /**
+     * {@link #strafingProfile()} with a kind and a terrain response, for the bank's other denominator.
+     *
+     * <p>Under {@link ControlScheme#STRAFING} the lean is scaled by the side speed rather than by the
+     * yaw rate, and the two are different code paths with the same ceiling.
+     */
+    static @NotNull VehicleProfile strafingTerrainProfile(
+            @NotNull VehicleKind kind,
+            @NotNull TerrainResponse terrain
+    ) {
+        return VehicleProfile.builder(VEHICLE_BOUNDS)
+                .forwardSpeed(1F)
+                .strafeSpeed(0.5F)
+                .acceleration(0.25F)
+                .braking(0.5F)
+                .friction(0.5F)
+                .turnRate(10F)
+                .controls(ControlScheme.STRAFING)
+                .kind(kind)
+                .terrain(terrain)
+                .build();
+    }
+
+    /**
+     * A response that reaches its angle in one tick, so a test can assert on the target itself.
+     *
+     * <p>A blend of exactly one snaps, which is legal and is the only setting under which the angle a
+     * step produces <em>is</em> the angle the ceilings and the inputs describe. Every other blend makes
+     * an assertion about a target also an assertion about the blend.
+     *
+     * @param bank       the roll at a full-rate turn
+     * @param slope      the pitch on the steepest grade
+     * @param accel      the pitch under full acceleration
+     * @param stepHeight the tallest step, in blocks
+     * @param stepTicks  how many ticks a climb is spread over
+     */
+    static @NotNull TerrainResponse snapping(
+            float bank,
+            float slope,
+            float accel,
+            float stepHeight,
+            int stepTicks
+    ) {
+        return new TerrainResponse(bank, slope, accel, stepHeight, stepTicks, 1F);
+    }
+
     /** The same vehicle under the other control scheme. */
     static @NotNull VehicleProfile strafingProfile() {
         return VehicleProfile.builder(VEHICLE_BOUNDS)
@@ -156,6 +240,38 @@ final class VehicleFixtures {
     /** The same seat settings with the chart switched off, which is the operator's own verbosity key. */
     static @NotNull SeatSettings silentSeatSettings() {
         return new SeatSettings("MAGMA_CUBE", 0.25F, 3F, 0.1F, false, chartLabels());
+    }
+
+    /**
+     * The usual settings with a terrain response for every kind that a profile can inherit.
+     *
+     * <p>Deliberately not inert, because the whole of what the inheritance does is visible only when the
+     * default is something: a vehicle whose profile says nothing about terrain and whose server does
+     * either keeps behaving exactly as before, or picks the server's answer up, and only a non-identity
+     * default can tell the two apart.
+     */
+    static @NotNull VehicleSettings settingsWithTerrainDefaults() {
+        return new VehicleSettings(VEHICLE_BOUNDS, 3L, 6F, 2F, 0.05F, seatSettings(),
+                new VehicleSettings.TerrainDefaults(
+                        snapping(8F, 20F, 0F, 1F, 3),
+                        TerrainResponse.banking(12F, 1F),
+                        TerrainResponse.banking(6F, 1F),
+                        snapping(10F, 0F, 14F, 0F, 1)));
+    }
+
+    /**
+     * The usual settings with a rule about how often the ground may be read.
+     *
+     * <p>A one-tick control period rather than the three the rest of this class uses, because a sampling
+     * assertion is about how many of a vehicle's <em>steps</em> take a reading and a period of three
+     * would make every figure here a question about the period as well. The period only decides how often
+     * the platform dispatches the body, and these tests dispatch it by hand.
+     *
+     * @param sampling how often a reading may be taken
+     */
+    static @NotNull VehicleSettings settingsWithSampling(@NotNull TerrainSampling sampling) {
+        return new VehicleSettings(VEHICLE_BOUNDS, 1L, 6F, 2F, 0.05F, seatSettings(),
+                VehicleSettings.TerrainDefaults.INERT, sampling);
     }
 
     /** Settings carrying {@code seats}, for a test about one seat figure. */

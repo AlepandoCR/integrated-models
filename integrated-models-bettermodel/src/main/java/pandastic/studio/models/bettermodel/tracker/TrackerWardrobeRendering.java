@@ -3,7 +3,6 @@ package pandastic.studio.models.bettermodel.tracker;
 import kr.toxicity.model.api.BetterModel;
 import kr.toxicity.model.api.tracker.EntityTracker;
 import kr.toxicity.model.api.tracker.EntityTrackerRegistry;
-import kr.toxicity.model.api.tracker.ModelScaler;
 import kr.toxicity.model.api.tracker.TrackerUpdateAction;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
@@ -34,11 +33,17 @@ import java.util.Optional;
  * outline's color. A model tinted red whose outline was still white would read as a bug in the swatch
  * rather than as two settings, and there is only one slider set to blame.
  *
- * <h2>Scale composes with the entity's own</h2>
- * {@code ModelScaler.entity().multiply(scale)} rather than {@code ModelScaler.value(scale)}. The
- * renderer's default makes a model follow its entity's scale attribute, and replacing the scaler
- * outright would silently detach a disguise from a player shrunk by a potion or a plugin. The slider is a
- * multiplier on top of whatever the player already is.
+ * <h2>The scale is not applied here</h2>
+ * It is applied by the wardrobe through {@code RiggedModel#setScale}, because setting the tracker's
+ * scaler is only half of it: a worn model has a rig bound, so our own pose sink emits absolute bone
+ * transforms carrying the scale it captured at bind time, and it wrote that back over any later change
+ * on its next frame. The scale control therefore did nothing at all while a disguise was worn.
+ *
+ * <p>The reason the handle still composes rather than replaces - {@code entity().multiply(scale)} and
+ * not {@code value(scale)} - is unchanged and worth keeping in mind: the renderer's default makes a
+ * model follow its entity's scale attribute, so replacing the scaler outright would detach a disguise
+ * from a player shrunk by a potion or a plugin. The slider is a multiplier on top of whatever the
+ * player already is.
  *
  * <h2>Two toggles this cannot honor</h2>
  * {@link ModelAppearance#physics()} and {@link ModelAppearance#firstPersonArms()} are not applied here,
@@ -91,7 +96,14 @@ public final class TrackerWardrobeRendering implements WardrobeRendering {
         tracker.update(TrackerUpdateAction.glow(appearance.glow()));
         tracker.update(TrackerUpdateAction.glowColor(appearance.packedRgb()));
         tracker.update(TrackerUpdateAction.tint(appearance.packedRgb()));
-        tracker.scaler(ModelScaler.entity().multiply(appearance.scale()));
+        // The scale is NOT set here, and that is the fix rather than an omission. Setting the
+        // tracker's scaler is only half of it: a worn model has a rig bound, so our own pose sink is
+        // emitting absolute bone transforms with the scale it captured at bind time, and it wrote
+        // that bind-time scale straight back over this one on its next frame. The scale therefore
+        // appeared to do nothing at all while a disguise was worn.
+        //
+        // Both halves live behind RiggedModel#setScale, which the wardrobe now calls with the model
+        // handle it already holds. Reaching past that handle into the tracker is what hid the bug.
         return true;
     }
 

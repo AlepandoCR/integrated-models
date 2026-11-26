@@ -4,6 +4,8 @@ import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.Objects;
+
 /**
  * Every line the reload command can say, assembled and already validated.
  *
@@ -42,6 +44,8 @@ import org.jetbrains.annotations.Nullable;
  * @param failedMessage   what is said when the reload threw rather than being refused; placeholder
  *                        {@code error}
  * @param menuNotPlayerMessage reply sent when the menu command is used by a non-player sender
+ * @param status          every line the two status commands say, and how much they say; see
+ *                        {@link StatusSettings}
  */
 public record CommandSettings(
         @NotNull String menuNotPlayerMessage,
@@ -51,7 +55,8 @@ public record CommandSettings(
         @NotNull String refusedMessage,
         @NotNull String diagnosticLine,
         @NotNull String busyMessage,
-        @NotNull String failedMessage
+        @NotNull String failedMessage,
+        @NotNull StatusSettings status
 ) {
 
     /**
@@ -59,6 +64,11 @@ public record CommandSettings(
      *
      * <p>The menu reply was added when the player-facing command was wired; keeping this overload
      * avoids making test fixtures and downstream internal tooling provide an unrelated value.
+     *
+     * <p>The status settings it hands in are {@link StatusSettings#SILENT}, which is that record's
+     * identity value and <strong>not</strong> a set of defaults — a caller that has not configured the
+     * status commands is not entitled to an opinion about what they say, and a default here would be
+     * exactly the hardcoded label this project's configuration rule exists to remove.
      */
     public CommandSettings(
             @NotNull String startedMessage,
@@ -70,10 +80,11 @@ public record CommandSettings(
             @NotNull String failedMessage
     ) {
         this("<red>Only players can open the model menu.", startedMessage, appliedMessage, rebuildMessage,
-                refusedMessage, diagnosticLine, busyMessage, failedMessage);
+                refusedMessage, diagnosticLine, busyMessage, failedMessage, StatusSettings.SILENT);
     }
 
     public CommandSettings {
+        Objects.requireNonNull(status, "status");
         requireText(menuNotPlayerMessage, "menuNotPlayerMessage");
         requirePresent(startedMessage, "startedMessage");
         requireText(appliedMessage, "appliedMessage");

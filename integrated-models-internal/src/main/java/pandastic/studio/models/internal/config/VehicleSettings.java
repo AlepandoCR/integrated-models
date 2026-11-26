@@ -5,9 +5,25 @@ import pandastic.studio.core.service.api.config.ConfigValue;
 import pandastic.studio.core.service.api.config.Configurable;
 
 /**
- * Declaration of {@code vehicle.yml}: how fast anything a plugin calls a vehicle may go, how often the
- * server decides where it is, how far it may be moved without paying for a teleport, and how many
- * riders one may carry.
+ * Declaration of {@code vehicle.yml}: how fast anything a plugin calls a vehicle may go, how far it may
+ * lean and climb in answer to what it is driving over, how often the server decides where it is, how far
+ * it may be moved without paying for a teleport, and how many riders one may carry.
+ *
+ * <h2>The terrain keys come in three groups, and the third is about cost</h2>
+ * The {@code terrain.sample*} keys do not change what a vehicle does about the ground — they decide how
+ * often it <em>looks</em>. They are the only keys in this file about cost, and they are here because the
+ * terrain reaction is the only thing in this plugin that reads blocks, which is the one cost a regionised
+ * server cannot let anybody move off the owning thread. See {@link #terrainSampleMoveDeadbandBlocks()}.
+ *
+ * <h2>The other two halves</h2>
+ * The {@code terrain.max*} and {@code terrain.minAngleBlendPerTick} keys are <em>ceilings</em>: the
+ * server's statement about how far any vehicle on it may lean, pitch and climb, which is the same kind of
+ * statement {@link #maxSpeedBlocksPerTick()} makes. The {@code terrain.<kind>*} keys are what a
+ * vehicle whose plugin declares no terrain response <em>inherits</em>, so a server can retune every ground
+ * vehicle it runs without the plugin that ships them being rebuilt. Each default has to be a value the
+ * ceilings admit, and {@link ConfigMapper} checks every pair — for the reason {@code physics.yml}'s own
+ * defaults are checked against its bounds: a vehicle that inherits a default is then validated against
+ * those ceilings, so a ceiling narrowed past its own default breaks every vehicle of that kind.
  *
  * <h2>Two keys here are read by the rig loader</h2>
  * {@link #maxSeats()} and {@link #maxSeatOffsetBlocks()} bound a {@code seats:} section, which lives in
@@ -112,6 +128,474 @@ public interface VehicleSettings {
     @ConfigValue(comment = "Largest multiple of top speed the sprint key may unlock. 1 means the boost key does nothing. This times maxSpeedBlocksPerTick is the fastest per-tick step the server will see, which is what the cross-file checks are about.")
     default float maxBoostMultiplier() {
         return 2.5F;
+    }
+
+    // =============================================================================================
+    // Terrain: how far a vehicle's model may lean, pitch and climb, and what each kind does unless
+    // its own plugin says otherwise.
+    //
+    // Two halves with two different owners, which is why they are two groups of keys rather than
+    // one. The six ceilings are the server's statement: how far ANY vehicle on it may lean before it
+    // reads as broken geometry rather than as physics, and how long a climb may take before it reads
+    // as lag. The defaults below them are what a vehicle whose plugin declares no terrain response
+    // inherits, so that retuning every ground vehicle on the server is an edit here rather than a
+    // rebuild of the plugin that ships them. A profile that does declare its own response keeps it.
+    //
+    // Every angle is a CEILING reached at a full-rate input, never a constant. bankDegrees is the
+    // roll at a full-rate turn and the solver scales it by how hard the vehicle is actually turning,
+    // which is what makes one number enough for "a tight turn leans further than a gentle one".
+    //
+    // There is deliberately no key for a term its kind cannot honour. A ground vehicle's pitch is the
+    // hill it is on, so it has no acceleration pitch; nothing but a ground vehicle has a surface
+    // beneath it, so nothing else has a slope pitch, a step height or a step duration. A key no kind
+    // can read would be worse than no key at all: an operator would set it and watch nothing happen.
+    // =============================================================================================
+
+    /**
+     * Furthest any vehicle may roll into a turn, in degrees.
+     *
+     * <p>A quarter turn would put the model on its side and past that it is upside down, so the useful
+     * ceiling is well below one: the default is an eighth of a turn, which is already a fighter aircraft
+     * rather than a cart. Zero is legal and means this server permits no banking at all, which is what
+     * {@code VehicleBounds.NO_TERRAIN} expressed before these keys existed.
+     *
+     * @return the roll ceiling, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.maxBankDegrees",
+            comment = "Furthest any vehicle may roll into a turn, in degrees. The angle is reached at a full-rate turn and scaled below it, so this is the lean of the tightest turn rather than a constant. A quarter turn is a model lying on its side; zero permits no banking at all.")
+    default float terrainMaxBankDegrees() {
+        return 45F;
+    }
+
+    /**
+     * Furthest any vehicle may pitch to follow the ground under it, in degrees.
+     *
+     * <p>The steepest terrain a player can build is a block per block, which is 45 degrees, so a ceiling
+     * there is "as steep as the world gets" rather than an invented figure. Honoured only for the one
+     * kind that has a surface beneath it.
+     *
+     * @return the slope pitch ceiling, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.maxSlopePitchDegrees",
+            comment = "Furthest any vehicle may pitch to follow the ground under it, in degrees. The steepest terrain anybody can build is a block per block, which is 45 degrees, so that is as steep as the world gets. Only ground vehicles have a surface beneath them to take an angle from.")
+    default float terrainMaxSlopePitchDegrees() {
+        return 45F;
+    }
+
+    /**
+     * Furthest any vehicle may pitch under its own acceleration, in degrees.
+     *
+     * <p>Lower than the slope ceiling on purpose, because nothing in the world justifies this one: a
+     * slope pitch is the ground the vehicle is lying along and can be checked against it, while an
+     * acceleration pitch is expression — a boat squatting at the stern, a submarine nosing into a dive.
+     * Thirty degrees is already a submarine diving steeply.
+     *
+     * @return the acceleration pitch ceiling, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.maxAccelerationPitchDegrees",
+            comment = "Furthest any vehicle may pitch under its own acceleration, in degrees. Lower than the slope ceiling on purpose: a slope pitch is the ground the model lies along, while this one is expression - a boat squatting at the stern, a submarine nosing into a dive. Ground vehicles ignore it, because a car's pitch is the hill it is on.")
+    default float terrainMaxAccelerationPitchDegrees() {
+        return 30F;
+    }
+
+    /**
+     * Highest step any vehicle may climb, in blocks.
+     *
+     * <p>A block and a half, because a block is what the game itself steps: a vanilla horse climbs one
+     * and nothing climbs two. Above it a vehicle is not climbing a step, it is flying over a wall, and
+     * the honest way to ask for that is a flyer. Zero is legal and means this server permits no climbing.
+     *
+     * @return the step ceiling, in blocks
+     */
+    @ConfigValue(fieldName = "terrain.maxStepHeightBlocks",
+            comment = "Highest step any vehicle may climb, in blocks. A block is what the game itself steps - a vanilla horse climbs one and nothing climbs two - so above a block and a half a vehicle is flying over a wall rather than climbing a step. Zero permits no climbing at all.")
+    default float terrainMaxStepHeightBlocks() {
+        return 1.5F;
+    }
+
+    /**
+     * Longest a climb may be spread over, in ticks.
+     *
+     * <p>The duration is what makes a climb smooth: a display interpolates toward the transform it was
+     * last given over the window it was given, so a whole block applied in one tick gives the client one
+     * frame to cover it and snaps however good the arithmetic was. Three to four ticks reads as a
+     * suspension taking the step.
+     *
+     * <p>The ceiling is about the other end of that trade. A climb spread over half a second finishes
+     * well after the vehicle has driven past the step it was climbing, so the model is still rising while
+     * its hitbox is already level — which reads as lag rather than as weight.
+     *
+     * @return the climb duration ceiling, in ticks
+     */
+    @ConfigValue(fieldName = "terrain.maxStepDurationTicks",
+            comment = "Longest a climb may be spread over, in ticks. The duration is what buys the smoothness: a display interpolates over the window it was given, so a whole block in one tick snaps. Past half a second the model is still rising after the vehicle has driven off the step, which reads as lag rather than as weight.")
+    default int terrainMaxStepDurationTicks() {
+        return 10;
+    }
+
+    /**
+     * Slowest any vehicle may approach a new angle, as a fraction of the remaining difference per tick.
+     *
+     * <p>A floor rather than a ceiling, because this is the one terrain term where the <em>small</em>
+     * value is the dangerous one: at a fiftieth per tick a model needs about two and a half seconds to
+     * get most of the way to a lean, by which point the turn that caused it is over and the model is
+     * leaning into a straight. One is legal and snaps.
+     *
+     * @return the blend floor, as a fraction per tick
+     */
+    @ConfigValue(fieldName = "terrain.minAngleBlendPerTick",
+            comment = "Slowest any vehicle may approach a new angle, as a fraction of the remaining difference closed each tick. A floor and not a ceiling: this is the term where the small value is the dangerous one, because a model that takes seconds to reach a lean is still leaning into a turn that ended. 1 snaps immediately.")
+    default float terrainMinAngleBlendPerTick() {
+        return 0.02F;
+    }
+
+    // =============================================================================================
+    // How often the ground is read.
+    //
+    // These five keys are the only ones in this file about COST rather than about behaviour, and they
+    // are here because the terrain reaction is the only thing in this plugin that reads BLOCKS. One
+    // reading walks the column under the vehicle and the column one block ahead of it: five block
+    // reads on flat ground at the shipped reach, seven at worst. At one control step a tick that is a
+    // hundred block reads a second per vehicle, and the figure that matters is that times the number
+    // of vehicles on the server.
+    //
+    // None of it can be made asynchronous. A block read is legal only on the thread that owns the
+    // chunk, and on a regionised server that is a hard rule with no deferred form - so the only lever
+    // is reading LESS. The terrain under a vehicle does not change while the vehicle has not moved,
+    // which is what these keys exploit: a reading is kept until the vehicle has moved far enough to
+    // be over different blocks, turned far enough to be looking at a different column, or held it for
+    // long enough that the world might have changed instead.
+    //
+    // What they do NOT need is a second interpolator. terrain.<kind>AngleBlendPerTick already moves
+    // every angle a fraction of the remaining difference per measured tick, so between two readings
+    // the model keeps travelling toward the angle the older one implies - at a time constant of
+    // several ticks, which is longer than the interval below. A reading taken less often changes when
+    // the TARGET moves, not how smoothly the model gets there.
+    // =============================================================================================
+
+    /**
+     * How far a vehicle must move before its ground is read again, in blocks.
+     *
+     * <p>The key that makes a parked vehicle free, which is most vehicles most of the time. The distance
+     * is measured in three dimensions on purpose: a vehicle climbing a step moves almost entirely
+     * vertically, and that is exactly the moment the ground beneath it has changed.
+     *
+     * <p>Zero reads on every step the interval allows. The ceiling is one block, and it is structural
+     * rather than a matter of taste — the probe looks one column ahead, so a vehicle that has moved a
+     * whole column is standing in the column its reading called "ahead". Past that the reading is not
+     * stale, it is about somewhere else, and a vehicle re-reads regardless of what this key says.
+     *
+     * @return the deadband, in blocks
+     */
+    @ConfigValue(fieldName = "terrain.sampleMoveDeadbandBlocks",
+            comment = "How far a vehicle must move before the blocks under it are read again, in blocks, measured in three dimensions. This is what makes a parked vehicle cost nothing: the ground does not change while the vehicle has not moved. Zero reads on every step the interval allows. At most one block, which is the probe's own look-ahead - past a whole column the reading describes ground the vehicle has already driven into, and it is re-read whatever this says.")
+    default float terrainSampleMoveDeadbandBlocks() {
+        return 0.25F;
+    }
+
+    /**
+     * How far a vehicle must turn before its ground is read again, in degrees.
+     *
+     * <p>Its own term rather than part of the distance above, because the column a probe looks at is
+     * chosen by the heading: a vehicle turning on the spot has not moved an inch and is looking at
+     * different ground. Fifteen degrees moves the probe's own target about a quarter of a block
+     * sideways, which is about when the column it lands in can change.
+     *
+     * @return the turn deadband, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.sampleTurnDeadbandDegrees",
+            comment = "How far a vehicle must turn before the blocks under it are read again, in degrees. Its own key rather than part of the distance, because which column counts as 'ahead' is chosen by the heading - a vehicle turning on the spot has not moved and is looking somewhere else. 15 degrees moves the probe's target about a quarter of a block.")
+    default float terrainSampleTurnDeadbandDegrees() {
+        return 15F;
+    }
+
+    /**
+     * Fewest ticks between two readings, whatever the vehicle did in between.
+     *
+     * <p>What decouples the sample rate from the control rate. The loop decides where a vehicle is every
+     * tick because a rider's input changes that often; the ground does not, and a vehicle at full speed
+     * crosses the deadband every single step — so without this key the deadband saves nothing for exactly
+     * the vehicles that are costing the most.
+     *
+     * <p>Zero imposes no minimum. Raising it does not make the model's lean coarser, because the blend
+     * keeps running between readings; it makes the vehicle notice a change in the ground this many ticks
+     * late.
+     *
+     * @return the minimum interval, in ticks
+     */
+    @ConfigValue(fieldName = "terrain.sampleMinIntervalTicks",
+            comment = "Fewest ticks between two readings of the ground, whatever the vehicle did in between. This is what decouples the sample rate from the control rate: a rider's input changes every tick, the ground does not, and a vehicle at full speed crosses the deadband on every step. Zero imposes no minimum. It does not make the lean coarser - the angle blend keeps running between readings - it makes the vehicle notice new ground this many ticks late.")
+    default int terrainSampleMinIntervalTicks() {
+        return 2;
+    }
+
+    /**
+     * After how many ticks a reading is taken again regardless of the deadband.
+     *
+     * <p>The other half of the deadband, and the reason it is safe: the thing that changed may be the
+     * world rather than the vehicle. A player builds a ramp under a parked cart, and nothing about the
+     * cart's own motion will ever notice. Two seconds is the default, so a parked vehicle costs one
+     * reading every two seconds instead of twenty a second.
+     *
+     * <p>Must not be below {@link #terrainSampleMinIntervalTicks()}, or a reading expires before the
+     * interval it was waiting for and the deadband suppresses nothing. {@link ConfigMapper} refuses that
+     * pairing.
+     *
+     * @return the reading's lifetime, in ticks
+     */
+    @ConfigValue(fieldName = "terrain.sampleMaxAgeTicks",
+            comment = "After how many ticks the ground is read again even though the vehicle has not moved. The other half of the deadband and the reason it is safe: what changed may be the world rather than the vehicle, and a ramp built under a parked cart is something the cart's own motion will never notice. 40 is two seconds. Must not be below sampleMinIntervalTicks.")
+    default int terrainSampleMaxAgeTicks() {
+        return 40;
+    }
+
+    /**
+     * Whether a vehicle no viewer can see reads any blocks at all.
+     *
+     * <p>The largest saving here and the only one with a cost worth stating. What the terrain reaction
+     * produces is a lean, a pitch and a step up on a <em>model</em>, so for a vehicle whose model no
+     * viewer holds the right number of block reads is zero — and on a server with vehicles parked in
+     * unvisited corners, that is most of them.
+     *
+     * <p>The cost is that an unseen vehicle does not climb, because the step-up is carried by the same
+     * reading as the lean and arming one requires a reading taken that step. So an unobserved vehicle
+     * driving at a kerb stops at it. That repairs itself on observation: the first step on which any
+     * viewer holds the model takes a reading and arms the climb, so a player arriving finds a vehicle
+     * that drives on rather than one that is stuck. Switch it off for a server whose vehicles drive
+     * themselves across terrain nobody is watching.
+     *
+     * @return whether to read the ground only for a vehicle somebody can see
+     */
+    @ConfigValue(fieldName = "terrain.sampleOnlyWhenSeen",
+            comment = "Whether a vehicle whose model no viewer holds reads any blocks at all. The biggest saving: what the terrain reaction produces is a lean, a pitch and a step up on a model, so an unseen vehicle's right cost is zero. The price is that an unseen vehicle does not climb - it stops at a kerb - and repairs itself the first step somebody can see it. Switch it off for vehicles that drive themselves across terrain nobody is watching.")
+    default boolean terrainSampleOnlyWhenSeen() {
+        return true;
+    }
+
+    // =============================================================================================
+    // The per-kind defaults.
+    //
+    // Fourteen keys rather than four kinds times six terms, because ten of those twenty-four would be
+    // a term the kind ignores. What each kind gets a key for is exactly what it honours:
+    //
+    //   ground     bank, slope pitch, step height, step duration, blend
+    //   flyer      bank, acceleration pitch, blend
+    //   submarine  bank, acceleration pitch, blend
+    //   boat       bank, acceleration pitch, blend
+    //
+    // Bank and blend are every kind's, because all four turn and all four have an angle to reach.
+    // The slope and the step are the ground vehicle's alone - it is the only kind with a surface
+    // beneath it - and the acceleration pitch is every kind's but the ground vehicle's, whose pitch
+    // is already the hill it is on and would fight a squat laid on top of it.
+    //
+    // Each figure has to be a value the ceilings above admit, for the reason physics.yml's defaults
+    // do: a vehicle that inherits one is then validated against those ceilings, so an operator who
+    // narrowed a ceiling past its own default has broken every vehicle of that kind on the server.
+    // ConfigMapper checks each pair and names the default, because a narrowed ceiling was deliberate.
+    // =============================================================================================
+
+    /**
+     * How far a ground vehicle rolls into a full-rate turn, in degrees.
+     *
+     * <p>Small, because a car on its suspension leans a few degrees and a cart on axles barely does. The
+     * figure that reads as a motorcycle belongs on the vehicle's own profile, not on every ground vehicle
+     * the server runs.
+     *
+     * @return the roll, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.groundBankDegrees",
+            comment = "How far a ground vehicle rolls into a full-rate turn, in degrees, unless its own plugin says otherwise. Small: a car on its suspension leans a few degrees and a cart on axles barely does.")
+    default float defaultGroundBankDegrees() {
+        return 8F;
+    }
+
+    /**
+     * How far a ground vehicle pitches to follow the steepest slope it will take, in degrees.
+     *
+     * <p>Below the ceiling and deliberately: the ceiling is the steepest ground anybody can build, while
+     * this is the slope a vehicle shipped with no opinion is expected to meet. A quarter of a turn would
+     * be a vehicle climbing a staircase nose-first.
+     *
+     * @return the pitch, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.groundSlopePitchDegrees",
+            comment = "How far a ground vehicle pitches to follow the slope under it, in degrees, unless its own plugin says otherwise. The angle at the steepest slope it will take; gentler ground pitches it less.")
+    default float defaultGroundSlopePitchDegrees() {
+        return 25F;
+    }
+
+    /**
+     * How high a step a ground vehicle climbs, in blocks.
+     *
+     * <p>One block, which is what the game itself steps: a player walks up a slab and a horse climbs a
+     * full block, so a vehicle that cannot is a vehicle that gets stuck on a kerb. Zero disables climbing
+     * for every ground vehicle that declares nothing.
+     *
+     * @return the step height, in blocks
+     */
+    @ConfigValue(fieldName = "terrain.groundStepHeightBlocks",
+            comment = "How high a step a ground vehicle climbs, in blocks, unless its own plugin says otherwise. One block is what the game itself steps, so a vehicle below it gets stuck on a kerb. Zero disables climbing for every ground vehicle that declares nothing.")
+    default float defaultGroundStepHeightBlocks() {
+        return 1F;
+    }
+
+    /**
+     * How many ticks a ground vehicle's climb is spread over.
+     *
+     * <p>Three, which is the low end of the window that reads as a suspension taking the step. One would
+     * mean the climb is applied in a single tick, which is not "instant and smooth" but simply instant:
+     * the client is given one frame to cover a whole block.
+     *
+     * @return the climb duration, in ticks
+     */
+    @ConfigValue(fieldName = "terrain.groundStepDurationTicks",
+            comment = "How many ticks a ground vehicle's climb is spread over, unless its own plugin says otherwise. This is what buys the smoothness: the client interpolates across the window it is given, so 1 means the block is covered in a single frame and snaps. Three to four reads as a suspension taking the step.")
+    default int defaultGroundStepDurationTicks() {
+        return 3;
+    }
+
+    /**
+     * Fraction of a ground vehicle's remaining angle difference closed each tick.
+     *
+     * <p>A fifth, so a lean is most of the way there in about a quarter of a second. This is a property
+     * of the vehicle's <em>mass</em> rather than of how far it leans, which is why it is its own key: a
+     * laden truck and a motorbike can bank to the same angle and have no business getting there at the
+     * same rate.
+     *
+     * @return the blend, as a fraction per tick
+     */
+    @ConfigValue(fieldName = "terrain.groundAngleBlendPerTick",
+            comment = "Fraction of a ground vehicle's remaining angle difference closed each tick, unless its own plugin says otherwise. A property of the vehicle's mass rather than of how far it leans: a laden truck and a motorbike can bank to the same angle and have no business getting there at the same rate.")
+    default float defaultGroundAngleBlendPerTick() {
+        return 0.2F;
+    }
+
+    /**
+     * How far a flyer rolls into a full-rate turn, in degrees.
+     *
+     * <p>The largest of the four, because banking is the whole of a flyer's terrain response: it has no
+     * surface under it to take a slope or a step from, so the only thing left to read as flight is the
+     * roll into the turn. An aircraft that turns flat looks like it is sliding.
+     *
+     * @return the roll, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.flyerBankDegrees",
+            comment = "How far a flyer rolls into a full-rate turn, in degrees, unless its own plugin says otherwise. The largest of the four kinds, because banking is the whole of a flyer's terrain response: it has no surface beneath it, and an aircraft that turns flat reads as sliding.")
+    default float defaultFlyerBankDegrees() {
+        return 30F;
+    }
+
+    /**
+     * How far a flyer pitches under full acceleration, in degrees.
+     *
+     * <p>Nose-up as it opens the throttle. Modest, because a flyer's pitch competes with the bank for the
+     * same model: two large angles at once read as a crash rather than as a climb.
+     *
+     * @return the pitch, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.flyerAccelerationPitchDegrees",
+            comment = "How far a flyer pitches under full acceleration, in degrees, unless its own plugin says otherwise. Modest, because it competes with the bank for the same model and two large angles at once read as a crash rather than as a climb.")
+    default float defaultFlyerAccelerationPitchDegrees() {
+        return 10F;
+    }
+
+    /**
+     * Fraction of a flyer's remaining angle difference closed each tick.
+     *
+     * <p>The quickest of the four: air is the lightest medium in the set and an aircraft rolls into a turn
+     * in well under a second.
+     *
+     * @return the blend, as a fraction per tick
+     */
+    @ConfigValue(fieldName = "terrain.flyerAngleBlendPerTick",
+            comment = "Fraction of a flyer's remaining angle difference closed each tick, unless its own plugin says otherwise. The quickest of the four kinds: air is the lightest medium in the set and an aircraft rolls into a turn in well under a second.")
+    default float defaultFlyerAngleBlendPerTick() {
+        return 0.25F;
+    }
+
+    /**
+     * How far a submarine rolls into a full-rate turn, in degrees.
+     *
+     * <p>Between the flyer's and the boat's: a submerged hull is free to roll like an aircraft and is
+     * held by far more water than a surface vessel pushes.
+     *
+     * @return the roll, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.submarineBankDegrees",
+            comment = "How far a submarine rolls into a full-rate turn, in degrees, unless its own plugin says otherwise. Between the flyer's and the boat's: a submerged hull is free to roll like an aircraft, and is held by far more water than a surface vessel pushes.")
+    default float defaultSubmarineBankDegrees() {
+        return 15F;
+    }
+
+    /**
+     * How far a submarine pitches under full acceleration, in degrees.
+     *
+     * <p>The largest acceleration pitch of the four, because it is the one that carries meaning rather
+     * than flavour: a submarine nose-down while it descends is the whole visual language of the thing,
+     * and a submarine that dives level reads as a bug.
+     *
+     * @return the pitch, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.submarineAccelerationPitchDegrees",
+            comment = "How far a submarine pitches under full acceleration, in degrees, unless its own plugin says otherwise. The largest of the four, because it carries meaning rather than flavour: nose-down while descending is the whole visual language of a submarine, and one that dives level reads as a bug.")
+    default float defaultSubmarineAccelerationPitchDegrees() {
+        return 20F;
+    }
+
+    /**
+     * Fraction of a submarine's remaining angle difference closed each tick.
+     *
+     * <p>The slowest of the four, which is the point: water resists, and a submarine that snaps to a new
+     * attitude reads as weightless.
+     *
+     * @return the blend, as a fraction per tick
+     */
+    @ConfigValue(fieldName = "terrain.submarineAngleBlendPerTick",
+            comment = "Fraction of a submarine's remaining angle difference closed each tick, unless its own plugin says otherwise. The slowest of the four, which is the point: water resists, and a submarine that snaps to a new attitude reads as weightless.")
+    default float defaultSubmarineAngleBlendPerTick() {
+        return 0.1F;
+    }
+
+    /**
+     * How far a boat rolls into a full-rate turn, in degrees.
+     *
+     * <p>A hull heels outward as it turns, and the figure is small because the surface it floats on is
+     * what stops it going further.
+     *
+     * @return the roll, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.boatBankDegrees",
+            comment = "How far a boat rolls into a full-rate turn, in degrees, unless its own plugin says otherwise. A hull heels outward as it turns, and the figure is small because the surface it floats on is what stops it going further.")
+    default float defaultBoatBankDegrees() {
+        return 12F;
+    }
+
+    /**
+     * How far a boat pitches under full acceleration, in degrees.
+     *
+     * <p>Stern-down as it opens up and nose-down as it slows, which is the one terrain-reactive term a
+     * surface vessel actually has: it cannot climb, and the water it sits on has no slope to follow.
+     *
+     * @return the pitch, in degrees
+     */
+    @ConfigValue(fieldName = "terrain.boatAccelerationPitchDegrees",
+            comment = "How far a boat pitches under full acceleration, in degrees, unless its own plugin says otherwise. Stern-down as it opens up and nose-down as it slows - the one terrain-reactive term a surface vessel has, since it cannot climb and the water it sits on has no slope to follow.")
+    default float defaultBoatAccelerationPitchDegrees() {
+        return 8F;
+    }
+
+    /**
+     * Fraction of a boat's remaining angle difference closed each tick.
+     *
+     * <p>Slower than a flyer's and quicker than a submarine's: a hull is half in the water it is resisted
+     * by.
+     *
+     * @return the blend, as a fraction per tick
+     */
+    @ConfigValue(fieldName = "terrain.boatAngleBlendPerTick",
+            comment = "Fraction of a boat's remaining angle difference closed each tick, unless its own plugin says otherwise. Slower than a flyer's and quicker than a submarine's: a hull is half in the water that resists it.")
+    default float defaultBoatAngleBlendPerTick() {
+        return 0.15F;
     }
 
     /**

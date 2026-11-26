@@ -183,6 +183,29 @@ public final class TrackerPoseSink implements PoseSink {
     /** Display scales, constant after binding, so the drain never has to touch the bind pose. */
     private final float[] scales;
 
+    /**
+     * A uniform multiplier applied on top of {@link #scales}, so a model can be rescaled after it
+     * was bound.
+     *
+     * <h2>The defect this exists to fix</h2>
+     * {@link #scales} is captured once at bind time, and this sink writes an <strong>absolute</strong>
+     * scale into every {@code transform(...)}. So it is a second writer to the same displays as the
+     * renderer's own pass, and the one with a frozen value: a caller that changed the tracker's
+     * {@code ModelScaler} saw the renderer apply it and saw this sink write the bind-time scale back
+     * on the very next emission. The scale never stuck, and it only failed while a rig was bound -
+     * which is why it presented as "scale does not work while disguised", a disguise being a rigged
+     * model.
+     *
+     * <h2>Why a plain float and not the tracker's scaler</h2>
+     * Because {@code ModelScaler.entity()} resolves an entity attribute, and reading an entity from
+     * the emission path is the one thing this sink must not do - the note on {@code modelScaleOf}
+     * says so and it is still true. A volatile float carries the same information with no entity in
+     * it: the setter is called from whichever thread owns the caller, the drain does one volatile
+     * read per pass, and the two never have to agree about anything else. The same
+     * publish-an-immutable-value discipline the rest of this plugin's off-tick work uses.
+     */
+    private volatile float uniformScale = 1F;
+
     private final @NotNull ReentrantLock lock = new ReentrantLock();
     private final float[] stagedRotation;
     private final float[] stagedPosition;
@@ -508,6 +531,26 @@ public final class TrackerPoseSink implements PoseSink {
     }
 
     /** The {@code Tracker#frame} handler: turns whatever is staged into display transforms. */
+    /**
+     * Sets the uniform multiplier applied to every bone's display scale.
+     *
+     * <p>Takes effect on the next emission. Safe from any thread: it is one volatile write and it
+     * touches no entity, no tracker and no world.
+     *
+     * @param scale the multiplier; must be finite and greater than zero
+     */
+    public void uniformScale(float scale) {
+        if (!Float.isFinite(scale) || scale <= 0F) {
+            throw new IllegalArgumentException("scale must be finite and greater than zero");
+        }
+        this.uniformScale = scale;
+    }
+
+    /** The uniform multiplier currently applied on top of the bind-time scales. */
+    public float uniformScale() {
+        return this.uniformScale;
+    }
+
     private void drain(@NotNull Tracker tracker, @NotNull Tracker.BundlerSet bundlerSet) {
         if (!this.active) {
             return;
@@ -521,6 +564,9 @@ public final class TrackerPoseSink implements PoseSink {
             // so a retained reference would build packets into something already sent.
             final AnimationBundler bundler = bundlerSet.getViewBundler();
             final int duration = this.stagedDuration;
+            // One read for the whole pass, like the settings snapshot: a pass that read it per bone
+            // could straddle a change and scale half the model.
+            final float scale = this.uniformScale;
 
             for (int bone = 0; bone < this.staged.length; bone++) {
                 if (!this.staged[bone]) {
@@ -545,9 +591,9 @@ public final class TrackerPoseSink implements PoseSink {
                         this.stagedPosition[vectorSlot + 2]);
                 this.positionOut.add(this.defaultPosition);
                 this.scaleOut.set(
-                        this.scales[vectorSlot],
-                        this.scales[vectorSlot + 1],
-                        this.scales[vectorSlot + 2]);
+                        this.scales[vectorSlot] * scale,
+                        this.scales[vectorSlot + 1] * scale,
+                        this.scales[vectorSlot + 2] * scale);
 
                 this.transformers[bone].transform(
                         duration, this.positionOut, this.scaleOut, this.rotationOut, bundler);

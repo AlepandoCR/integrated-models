@@ -78,6 +78,51 @@ public interface VehicleHost {
     boolean readInto(@NotNull VehicleSample sample);
 
     /**
+     * Fills {@code sample} with what the root entity is standing on and what is one block ahead of it.
+     *
+     * <h2>Why this is on the entity seam and not a world one</h2>
+     * Because the thread rule is the same rule. A block read is legal only on the region that owns the
+     * block, and the region that owns the vehicle's own column is the region that owns the vehicle — so
+     * the one object that already knows which thread may touch the root is the one object that can answer
+     * this safely. A second seam would be a second place to get the rule wrong.
+     *
+     * <h2>The look-ahead probe, and what is done about it</h2>
+     * The column under the vehicle is always safe: the caller is on the thread that owns the entity, and
+     * a region owns the entities in the chunks it owns. The column <em>ahead</em> is not, because a
+     * region boundary is a chunk boundary and a vehicle crosses them for a living. Folia neither stops
+     * that read nor reports it.
+     *
+     * <p>So the probe is <strong>clamped to the owning region</strong>: the column ahead is read only
+     * when the calling region owns it and it is loaded, and otherwise
+     * {@link TerrainSample#isAheadKnown()} comes back false for that one step. The alternative — asking
+     * the neighbouring region and using its answer on a later step — was rejected: the answer would
+     * arrive for a column the vehicle has already driven into, it would need a second writer into state
+     * the control step reads, and the moment it is most wrong is exactly the moment it is needed, a
+     * vehicle crossing a boundary at speed. A refused sample costs one step of a vehicle not noticing a
+     * step up. A stale one costs a vehicle climbing a block that is no longer there.
+     *
+     * <p><strong>Owning thread only.</strong> Everything about the sample is undefined otherwise.
+     *
+     * @param sample      a buffer the caller owns and reuses. Filled on every outcome, including the
+     *                    refusals — see {@link TerrainSample#unavailable()} — so a caller never reads a
+     *                    previous step's terrain by accident
+     * @param reachBlocks how far above and below the vehicle to look for a surface, in blocks. Derived
+     *                    by the caller from the profile's own step height, so this seam holds no tuning
+     * @param headingDegrees which way "ahead" is, as the server measures yaw
+     * @return whether anything at all could be read. {@code false} from a host with no world, which is
+     *         the default: a substitute host in a test that is not about terrain has no blocks to offer,
+     *         and a vehicle with no terrain answer keeps the attitude it had rather than snapping flat
+     */
+    default boolean probeTerrain(
+            @NotNull TerrainSample sample,
+            float reachBlocks,
+            float headingDegrees
+    ) {
+        sample.unavailable();
+        return false;
+    }
+
+    /**
      * Dispatches {@code body} every {@code periodTicks} on the thread allowed to touch the root entity.
      *
      * @param body        the control step, run on the owning thread; never concurrently with itself

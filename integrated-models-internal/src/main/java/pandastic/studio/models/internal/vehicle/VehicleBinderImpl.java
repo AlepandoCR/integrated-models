@@ -5,9 +5,12 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import pandastic.studio.models.api.model.ModelManager;
 import pandastic.studio.models.api.rig.Rig;
+import pandastic.studio.models.api.vehicle.TerrainResponse;
 import pandastic.studio.models.api.vehicle.VehicleBinder;
+import pandastic.studio.models.api.vehicle.VehiclePilot;
 import pandastic.studio.models.api.vehicle.VehicleProfile;
 import pandastic.studio.models.api.vehicle.VehicleSetup;
+import pandastic.studio.models.internal.input.InputFaultSink;
 import pandastic.studio.models.internal.sim.SimulationClock;
 import pandastic.studio.models.internal.sim.SimulationLogger;
 
@@ -46,6 +49,13 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li><strong>A rig whose bone names no longer match its model.</strong> Last of the pure checks, and
  *       it fails with every broken name in one message rather than the first.</li>
  * </ol>
+ *
+ * <p>Note where the AI path's own refusals are: {@link VehicleBinder#createPiloted} is a default method
+ * on the interface and makes its checks — a plan that leaves the vanilla goals in place, a species whose
+ * tick does not tick its brain, a plan outside the live bounds — <em>before</em> calling in here, so the
+ * authority refusal above still runs before a brain has been rebuilt. That ordering is the reason the
+ * creature is given its plan after the vehicle exists rather than before; see
+ * {@link pandastic.studio.models.api.vehicle.AiPilot#pending()}.
  */
 public final class VehicleBinderImpl implements VehicleBinder {
 
@@ -68,6 +78,18 @@ public final class VehicleBinderImpl implements VehicleBinder {
      * {@code fromHost} needs a host and a host is per vehicle.
      */
     private final @Nullable RiderInputSource inputs;
+
+    /**
+     * Where a consumer's {@link pandastic.studio.models.api.vehicle.VehicleController} goes when it
+     * throws, for every vehicle this binder creates.
+     *
+     * <p>One sink for the whole server, because the counters are about a controller <em>class</em> and
+     * not about one vehicle: forty tanks sharing a broken controller should produce one report per
+     * configured interval rather than forty. {@code null} means the caller has no input layer to borrow
+     * the policy from, and each vehicle falls back to reporting every occurrence through the simulation
+     * logger and never detaching — see {@link VehicleImpl}'s eleven-argument constructor.
+     */
+    private final @Nullable InputFaultSink controllerFaults;
 
     /**
      * Every vehicle handed out and not yet torn down.
@@ -128,6 +150,36 @@ public final class VehicleBinderImpl implements VehicleBinder {
             @NotNull ModelManager registry,
             @Nullable RiderInputSource inputs
     ) {
+        this(hosts, visuals, settings, clock, logger, chartSink, registry, inputs, null);
+    }
+
+    /**
+     * @param hosts    how an entity becomes something this layer may drive
+     * @param visuals  where a vehicle's model comes from, or {@link VehicleVisualFactory#NONE}
+     * @param settings where the bounds, the clamps and the control period come from
+     * @param clock    the monotonic clock every control step differences
+     * @param logger   where a control step that threw is reported
+     * @param chartSink where each vehicle's seat chart is written
+     * @param registry where every vehicle this binder creates is published
+     * @param inputs   where every vehicle reads its riders' input, or {@code null} for the
+     *                 movement-only fallback
+     * @param controllerFaults where a consumer's {@code VehicleController} goes when it throws, or
+     *                         {@code null} for the unconfigured fallback. The production value is the
+     *                         input layer's own throttling sink: a controller is consumer code reacting
+     *                         to rider input, so it is judged by the same policy out of the same two
+     *                         keys as a bound input handler rather than by a second one
+     */
+    public VehicleBinderImpl(
+            @NotNull VehicleHostFactory hosts,
+            @NotNull VehicleVisualFactory visuals,
+            @NotNull VehicleSettingsSource settings,
+            @NotNull SimulationClock clock,
+            @NotNull SimulationLogger logger,
+            @NotNull SeatChartSink chartSink,
+            @NotNull ModelManager registry,
+            @Nullable RiderInputSource inputs,
+            @Nullable InputFaultSink controllerFaults
+    ) {
         this.hosts = Objects.requireNonNull(hosts, "hosts");
         this.visuals = Objects.requireNonNull(visuals, "visuals");
         this.settings = Objects.requireNonNull(settings, "settings");
@@ -136,6 +188,7 @@ public final class VehicleBinderImpl implements VehicleBinder {
         this.chartSink = Objects.requireNonNull(chartSink, "chartSink");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.inputs = inputs;
+        this.controllerFaults = controllerFaults;
     }
 
     @Override
@@ -154,15 +207,36 @@ public final class VehicleBinderImpl implements VehicleBinder {
             @NotNull Entity root,
             @NotNull VehicleSetup setup
     ) {
+        return create(rig, profile, root, setup, VehiclePilot.NONE);
+    }
+
+    @Override
+    public @NotNull VehicleImpl create(
+            @NotNull Rig rig,
+            @NotNull VehicleProfile profile,
+            @NotNull Entity root,
+            @NotNull VehicleSetup setup,
+            @NotNull VehiclePilot pilot
+    ) {
         Objects.requireNonNull(rig, "rig");
         Objects.requireNonNull(profile, "profile");
         Objects.requireNonNull(root, "root");
         Objects.requireNonNull(setup, "setup");
+        Objects.requireNonNull(pilot, "pilot");
 
-        // 1. The operator's ranges. Pure, so it costs nothing to do first and it names the component.
-        profile.requireWithin(this.settings.current().bounds());
+        // One snapshot read for the whole creation, so the terrain response a vehicle inherits and the
+        // ranges it is checked against come from the same generation of the file. Read separately they
+        // could straddle a reload, and the combination would be one no file describes.
+        final VehicleSettings current = this.settings.current();
 
-        // 2. The authority refusal. An instanceof chain, so it touches no entity state and is legal from
+        // 1. The terrain response, if the profile declared none. Before the validation, because what has
+        //    to be inside the operator's ranges is the response the vehicle will actually use.
+        final VehicleProfile effective = withInheritedTerrain(profile, current);
+
+        // 2. The operator's ranges. Pure, so it costs nothing to do first and it names the component.
+        effective.requireWithin(current.bounds());
+
+        // 3. The authority refusal. An instanceof chain, so it touches no entity state and is legal from
         //    any thread — which is why it can run before the thread check.
         if (ClientSteeredRoots.isKnownClientSteered(root)) {
             throw new IllegalStateException("A " + root.getType() + " cannot be the root of a"
@@ -174,7 +248,7 @@ public final class VehicleBinderImpl implements VehicleBinder {
 
         final VehicleHost host = this.hosts.hostFor(root);
 
-        // 3. The thread. Before anything is allocated, because everything after this touches the entity.
+        // 4. The thread. Before anything is allocated, because everything after this touches the entity.
         if (!host.isOwnedByCurrentThread()) {
             throw new IllegalStateException("A vehicle on " + host.describe() + " cannot be created from"
                     + " this thread: creating it reads the root entity's heading and spawns its model,"
@@ -182,13 +256,20 @@ public final class VehicleBinderImpl implements VehicleBinder {
                     + " on that thread.");
         }
 
-        // 4. The rig. Nothing exists in the world yet, so a failure here costs nothing to unwind.
+        // 5. The rig. Nothing exists in the world yet, so a failure here costs nothing to unwind.
         final VehicleVisual visual = this.visuals.visualFor(rig, root);
 
         final RiderInputSource source =
                 this.inputs == null ? RiderInputSource.fromHost(host) : this.inputs;
-        final VehicleImpl vehicle = new VehicleImpl(rig, profile, host, visual, this.settings,
-                this.clock, this.logger, this.chartSink, setup, source, this::unregister);
+        // One construction path. A binder with no fault sink to borrow gets the same unconfigured
+        // fallback a vehicle built through the shorter constructors has always got — report every
+        // occurrence, never detach — rather than a second constructor to choose between.
+        final InputFaultSink faults = this.controllerFaults == null
+                ? VehicleImpl.reportingThrough(this.logger)
+                : this.controllerFaults;
+        final VehicleImpl vehicle = new VehicleImpl(rig, effective, host, visual, this.settings,
+                this.clock, this.logger, this.chartSink, setup, source, faults, pilot,
+                this::unregister);
         // Registered before it is started, so a start that fails halfway tears itself out of both
         // collections through the same teardown every other exit uses.
         this.running.add(vehicle);
@@ -208,6 +289,66 @@ public final class VehicleBinderImpl implements VehicleBinder {
             throw failed;
         }
         return vehicle;
+    }
+
+    /**
+     * {@code profile} with the operator's terrain response for its kind, if it declared none of its own.
+     *
+     * <h2>What counts as "declared none", and why it is an identity comparison</h2>
+     * {@link TerrainResponse#NONE} is the shared constant the builder defaults to and the one
+     * {@code VehicleProfile.withoutTerrain} supplies, so it is exactly the value a profile that says
+     * nothing about terrain carries — and it is a constant, so comparing by identity is sound. A profile
+     * that <em>spelled out</em> an all-zero response keeps it: a plugin that went to the trouble of
+     * saying "this vehicle does not react to terrain" has said something, and inheriting over it would
+     * make the operator's file override a statement about one vehicle rather than fill a gap in it.
+     *
+     * <h2>Why this is the binder's job and not the profile's</h2>
+     * Because a profile is a statement about a thing and the defaults are a statement about a server, and
+     * the only place that holds both is here. {@link VehicleProfile} cannot reach configuration without
+     * the api gaining a dependency on it, and a vehicle cannot inherit after construction without its
+     * profile being mutable.
+     *
+     * @param profile what the calling plugin described
+     * @param current the configuration generation this whole creation is being decided against
+     * @return the profile the vehicle will actually drive under
+     * @throws IllegalStateException if the inherited response cannot be combined with this profile — a
+     *                               bank angle on a vehicle with nothing to lean from, which
+     *                               {@link VehicleProfile} refuses rather than render as a NaN roll
+     */
+    private static @NotNull VehicleProfile withInheritedTerrain(
+            @NotNull VehicleProfile profile,
+            @NotNull VehicleSettings current
+    ) {
+        if (profile.terrain() != TerrainResponse.NONE) {
+            return profile;
+        }
+        final TerrainResponse inherited = current.terrainDefaults().forKind(profile.kind());
+        if (inherited == TerrainResponse.NONE) {
+            return profile;
+        }
+        try {
+            return new VehicleProfile(
+                    profile.maxForwardSpeedBlocksPerTick(),
+                    profile.maxReverseSpeedBlocksPerTick(),
+                    profile.maxStrafeSpeedBlocksPerTick(),
+                    profile.accelerationBlocksPerTickSquared(),
+                    profile.brakingBlocksPerTickSquared(),
+                    profile.frictionPerTick(),
+                    profile.turnRateDegreesPerTick(),
+                    profile.boostMultiplier(),
+                    profile.controlScheme(),
+                    profile.kind(),
+                    inherited);
+        } catch (final IllegalArgumentException refused) {
+            // Reported against the pair rather than against the file, because neither half is wrong on
+            // its own: the operator's default is legal for the kind and the plugin's profile is legal
+            // without it, and only the combination is undefined.
+            throw new IllegalStateException("The terrain response this server gives a "
+                    + profile.kind().key() + " vehicle cannot be applied to this profile: "
+                    + refused.getMessage()
+                    + ". Either give the vehicle a terrain response of its own, or change the defaults"
+                    + " for that kind in vehicle.yml.", refused);
+        }
     }
 
     /**

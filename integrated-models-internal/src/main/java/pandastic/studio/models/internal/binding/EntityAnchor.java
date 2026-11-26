@@ -86,13 +86,19 @@ public final class EntityAnchor implements ModelAnchor {
         // One read of each coordinate, straight into the caller's buffer. Legal only because this runs
         // on the owning region thread, and cheap enough to be worth doing per tick per model: the
         // component getters avoid allocating the Location that getLocation() would.
+        //
+        // getPitch() and not getEyeLocation().getPitch(), which is what this used to read. The eye
+        // location is the entity's location with the eye height added to its y, so its pitch is the
+        // entity's pitch — identical value, and the accessor allocates a Location to carry it. One
+        // object per bound model per tick, on the thread that on a non-regionised server is the main
+        // thread, for a float that was already reachable without one.
         sample.set(
                 this.entity.getX(),
                 this.entity.getY(),
                 this.entity.getZ(),
                 this.entity instanceof LivingEntity living ? living.getBodyYaw() : this.entity.getYaw(),
                 this.entity.getYaw(),
-                this.entity instanceof LivingEntity living ? living.getEyeLocation().getPitch() : 0F,
+                this.entity instanceof LivingEntity ? this.entity.getPitch() : 0F,
                 this.entity.isSneaking(),
                 // The server updates this when the entity moves and does not recompute it otherwise,
                 // which is exactly the semantics the gait's airborne blend wants: "is it being held up

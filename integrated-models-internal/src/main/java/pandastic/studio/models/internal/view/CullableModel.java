@@ -63,8 +63,57 @@ public interface CullableModel {
      * <p>A model mid-bind, mid-unbind or explicitly hidden by a plugin is not a culling decision and
      * must not be treated as one: the culler's job is distance, and overriding it is somebody else's.
      * Answering {@code false} makes every viewer a hide.
+     *
+     * <p>It also takes the model out of {@link #setSimulated(boolean)}'s reach entirely — see there. A
+     * model that cannot be culled cannot be suspended either, because the two answers would contradict
+     * each other: "nobody holds this" would otherwise be indistinguishable from "this is not a decision
+     * I am allowed to make".
      */
     default boolean isCullable() {
+        return true;
+    }
+
+    /**
+     * Stops or restarts the work this model only does for the benefit of a viewer.
+     *
+     * <h2>This is where the saving is, and the packets are not it</h2>
+     * Suppressing packets for a model nobody holds is worth having and is <em>not</em> what makes a
+     * culler pay for itself. The per-step cost of a bound model is the simulation: a pose reset, a gait
+     * evaluation, a spring integration over every bone at the configured substep rate, and the emission
+     * that follows. All of it runs whether or not a single client is listening, because
+     * {@link pandastic.studio.models.internal.sim.SimulationLoop} knows nothing about viewers.
+     *
+     * <p>So the culler drives this. {@code false} takes the model's simulation off the loop's per-iteration
+     * work without unregistering it, and {@code true} puts it back. An implementation that cannot do that
+     * returns {@code false} from both and simply never saves anything, which is the honest answer for a
+     * model with no simulation of its own.
+     *
+     * <h2>What resuming does not have to do</h2>
+     * Nothing. In particular it must not reset the simulation, and this method must not touch one: the
+     * culling pass runs on the off-tick pass thread while the simulation loop is stepping on its own, so
+     * reaching into a {@code ModelSimulation} from here would be a race against the one thread that is
+     * allowed to. A single volatile flag is the whole mechanism.
+     *
+     * <p>That is safe because both layers already clamp a long interval. The first step after a resume
+     * measures the entire suspended gap, and the solver banks fractional time up to
+     * {@code PhysicsTuning#maxSubsteps()} and discards the rest, while the walk cycle clamps its own step
+     * to {@code GaitTuning#maxStepSeconds()}. So a model that was suspended for a minute catches up by a
+     * bounded amount and carries on, rather than either diverging or snapping back to its rest pose.
+     *
+     * @param simulated whether this model should be simulated
+     * @return whether this call changed the state
+     */
+    default boolean setSimulated(boolean simulated) {
+        return false;
+    }
+
+    /**
+     * Whether this model's simulation is currently being stepped.
+     *
+     * <p>{@code true} for a model that cannot be suspended, so a diagnostic counting what is live is not
+     * misled by a model that was never a candidate.
+     */
+    default boolean isSimulated() {
         return true;
     }
 }

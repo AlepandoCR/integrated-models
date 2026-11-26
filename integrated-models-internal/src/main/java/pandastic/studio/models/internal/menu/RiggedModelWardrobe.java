@@ -214,7 +214,23 @@ public final class RiggedModelWardrobe implements ModelWardrobe {
         Objects.requireNonNull(viewer, "viewer");
         Objects.requireNonNull(appearance, "appearance");
         this.appearances.put(viewer.getUniqueId(), appearance);
-        wornModel(viewer).ifPresent(modelId -> this.rendering.decorate(viewer, modelId, appearance));
+
+        final Worn ours = this.worn.get(viewer.getUniqueId());
+        if (ours == null) {
+            return;
+        }
+
+        // Colour and glow go through the renderer, because they are tracker state with no equivalent
+        // on the model handle.
+        this.rendering.decorate(viewer, ours.modelId(), appearance);
+
+        // The scale goes through the model, and that distinction is the whole fix. A worn model has a
+        // rig bound, so our pose sink emits absolute bone transforms; setting only the tracker's
+        // scaler left that sink writing its bind-time scale back on the next frame, which is why the
+        // scale control did nothing while a disguise was worn. RiggedModel#setScale sets both the
+        // scaler the renderer reads and the multiplier the sink reads, and it performs the thread hop
+        // the binding layer requires on the way.
+        ours.model().setScale(appearance.scale());
     }
 
     /**

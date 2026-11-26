@@ -3,6 +3,8 @@ package pandastic.studio.models.internal.vehicle;
 import org.junit.jupiter.api.Test;
 import pandastic.studio.models.api.vehicle.MoveKind;
 import pandastic.studio.models.api.vehicle.RiderIntent;
+import pandastic.studio.models.api.vehicle.VehicleKind;
+import pandastic.studio.models.api.vehicle.VehicleProfile;
 import pandastic.studio.models.api.vehicle.VehicleState;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -178,6 +180,98 @@ class VehicleStepperTest {
                 VehicleStepper.NANOS_PER_TICK * 100L);
 
         assertSame(MoveKind.LOCAL, plan.kind());
+    }
+
+    @Test
+    void aDisplacementExactlyAtTheConfiguredThresholdIsStillWrittenInPlace() {
+        // The boundary itself, and it is inclusive on purpose: the threshold is how far a single in-place
+        // write may reach, so a write of exactly that far is one it may make. Two ticks at the fixture's
+        // top speed of a block a tick is its two-block threshold exactly; half a tick more is past it.
+        final VehicleState rolling = new VehicleState(1F, 0F, 0F);
+
+        final VehicleStepper.Plan atTheLimit = VehicleStepper.plan(rolling,
+                RiderIntent.ofBits(RiderIntent.FORWARD_BIT), VehicleFixtures.profile(), this.settings,
+                VehicleStepper.NANOS_PER_TICK * 2L);
+        final VehicleStepper.Plan past = VehicleStepper.plan(rolling,
+                RiderIntent.ofBits(RiderIntent.FORWARD_BIT), VehicleFixtures.profile(), this.settings,
+                VehicleStepper.NANOS_PER_TICK * 5L / 2L);
+
+        assertAll(
+                () -> assertEquals(2.0D, atTheLimit.move().deltaZ(), EPSILON),
+                () -> assertSame(MoveKind.LOCAL, atTheLimit.kind()),
+                () -> assertEquals(2.5D, past.move().deltaZ(), EPSILON),
+                () -> assertSame(MoveKind.TELEPORT, past.kind())
+        );
+    }
+
+    @Test
+    void theSameOrdinaryStepIsARelocationOnAHostWithNoInPlaceMove() {
+        // The fact the stepper could not see and now is given. A server with no Mojang-mapped adapter
+        // cannot write a displacement in place at all, so every move its vehicles make is a relocation —
+        // and the plan now names the operation that will actually happen rather than the one the
+        // threshold would allow on a server that could perform it.
+        final VehicleState rolling = new VehicleState(0.5F, 0F, 0F);
+
+        final VehicleStepper.Plan withAdapter = VehicleStepper.plan(rolling,
+                RiderIntent.ofBits(RiderIntent.FORWARD_BIT), VehicleFixtures.profile(), this.settings,
+                VehicleStepper.NANOS_PER_TICK, TerrainAttitude.LEVEL, new TerrainSample(), true);
+        final VehicleStepper.Plan without = VehicleStepper.plan(rolling,
+                RiderIntent.ofBits(RiderIntent.FORWARD_BIT), VehicleFixtures.profile(), this.settings,
+                VehicleStepper.NANOS_PER_TICK, TerrainAttitude.LEVEL, new TerrainSample(), false);
+
+        assertAll(
+                () -> assertSame(MoveKind.LOCAL, withAdapter.kind()),
+                () -> assertSame(MoveKind.TELEPORT, without.kind()),
+                () -> assertEquals(withAdapter.move().deltaZ(), without.move().deltaZ(), EPSILON,
+                        "the displacement is the same; only the way it reaches the world differs"),
+                () -> assertFalse(without.isIdle(), "a step that has to relocate still has work to do")
+        );
+    }
+
+    @Test
+    void aStepWithNothingToWriteStaysNothingOnAHostWithNoInPlaceMove() {
+        // The one kind the capability must not touch. Promoting "nothing to write" to a relocation would
+        // make every parked vehicle on an adapterless server pay for a teleport transaction a tick, for a
+        // displacement of zero.
+        final VehicleStepper.Plan plan = VehicleStepper.plan(VehicleState.STOPPED, RiderIntent.NONE,
+                VehicleFixtures.profile(), this.settings, VehicleStepper.NANOS_PER_TICK,
+                TerrainAttitude.LEVEL, new TerrainSample(), false);
+
+        assertAll(
+                () -> assertSame(MoveKind.NONE, plan.kind()),
+                () -> assertTrue(plan.isIdle())
+        );
+    }
+
+    @Test
+    void aHostWithNoInPlaceMoveIsGrantedNoClimbToThrowAway() {
+        // The climbPermitted contract, which used to promise one thing and compute another. It promises
+        // false for a step whose displacement is going through the asynchronous teleport, and the one
+        // reason every step of a server goes through it — no adapter at all — was the one fact the
+        // stepper could not see. A rise granted anyway was folded into the move, routed to the
+        // relocation, and dropped; harmless only because the relocation also cancelled the armed climb.
+        final VehicleProfile climbing = VehicleFixtures.terrainProfile(
+                VehicleKind.GROUND, VehicleFixtures.snapping(20F, 24F, 0F, 1F, 4));
+        final TerrainSample hillside = new TerrainSample();
+        hillside.set(64.0D, 64.0D, true, 65.0D);
+
+        final VehicleStepper.Plan granted = VehicleStepper.plan(VehicleState.STOPPED, RiderIntent.NONE,
+                climbing, this.settings, VehicleStepper.NANOS_PER_TICK, TerrainAttitude.LEVEL, hillside,
+                true);
+        final VehicleStepper.Plan refused = VehicleStepper.plan(VehicleState.STOPPED, RiderIntent.NONE,
+                climbing, this.settings, VehicleStepper.NANOS_PER_TICK, TerrainAttitude.LEVEL, hillside,
+                false);
+
+        assertAll(
+                () -> assertEquals(0.25D, granted.terrain().rise(), EPSILON,
+                        "a block spread over the response's four ticks"),
+                () -> assertSame(MoveKind.LOCAL, granted.kind(), "a climb on its own is a local write"),
+                () -> assertEquals(0.0D, refused.terrain().rise(), EPSILON),
+                () -> assertSame(MoveKind.NONE, refused.kind(),
+                        "and nothing is written at all, rather than a teleport that discards the rise"),
+                () -> assertTrue(refused.terrain().next().isClimbing(),
+                        "deferred rather than abandoned, which is the solver's own documented rule")
+        );
     }
 
     @Test

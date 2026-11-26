@@ -43,6 +43,23 @@ import java.util.UUID;
  * in one sentence. {@link #capabilities()} is the machine-readable form and
  * {@link #bind} applies it to a specific binding, which is where a consumer actually needs it.
  *
+ * <p>The full source-by-family matrix — which source can observe what, and which can
+ * <em>suppress</em> what — is on {@link InputCapability}, and it is worth reading once: the
+ * combinations are not symmetrical, and the single cell that a server without an adapter cannot fill is
+ * stopping a movement key.
+ *
+ * <h2>Which thread each half of this is used from</h2>
+ * {@link #snapshot(Player)}, {@link #capabilities()}, {@link #tuning()} and
+ * {@link #unavailableReason()} are safe from <strong>any</strong> thread: each is a read of an
+ * immutable value published whole. That is the whole point of the polling half — a vehicle's control
+ * step reads it from the region that owns the vehicle, which is not necessarily the region that
+ * observed the input.
+ *
+ * <p>{@link #bind} and {@link InputRegistration#close()} are likewise callable from anywhere, so a
+ * consumer may bind in its own enable and close in its disable without hopping. What is <em>not</em>
+ * thread-free is the handler the binding runs: that is called on whichever thread observed the input,
+ * and {@link InputEvent#dispatch()} is how it finds out which.
+ *
  * @see InputCombination
  * @see InputCapability
  */

@@ -349,6 +349,12 @@ public final class SimulationLoop {
             if (!registration.active) {
                 continue;
             }
+            // Suspended, not unregistered: nobody can see this model, so stepping it would produce a
+            // pose no client is listening for. Checked here rather than inside the step because the
+            // whole step is what is being skipped — see Registration#setStepping.
+            if (!registration.stepping) {
+                continue;
+            }
             try {
                 registration.simulation.step(nowNanos);
             } catch (final Throwable thrown) {
@@ -378,6 +384,17 @@ public final class SimulationLoop {
          */
         private volatile boolean active = true;
 
+        /**
+         * Whether an iteration actually steps this simulation. Volatile because it is written by the
+         * view loop's pass thread and read by the simulation thread on every iteration.
+         *
+         * <p>Separate from {@link #active} on purpose. One means "this membership exists" and the other
+         * "this membership is currently doing anything", and collapsing them would make
+         * {@link #setStepping(boolean)} able to revive a model that had already been unregistered —
+         * which for a model whose entity is gone is a step straight into a detached sink.
+         */
+        private volatile boolean stepping = true;
+
         private Registration(@NotNull SimulationLoop loop, @NotNull ModelSimulation simulation) {
             this.loop = loop;
             this.simulation = simulation;
@@ -391,6 +408,53 @@ public final class SimulationLoop {
         /** Whether the loop is still stepping it. */
         public boolean isRegistered() {
             return this.active;
+        }
+
+        /**
+         * Suspends or resumes stepping, without giving up the membership.
+         *
+         * <h2>Why this and not an unregister</h2>
+         * Unregistering would work and would be wrong twice. The handle that holds this membership is
+         * the thing that unregisters it on teardown, so a second owner re-registering would hand that
+         * teardown a stale handle and leave a dead simulation on the loop forever. And {@link #size()}
+         * is what the health and statistics reports call "simulations", so a suspended model would
+         * silently stop being counted as bound.
+         *
+         * <p>Driven by {@link pandastic.studio.models.internal.view.ViewLoop} for a model no viewer
+         * holds. What it skips is the entire {@link ModelSimulation#step(long)}: the pose reset, the
+         * gait, the spring integration over every bone at the substep rate, the at-rest test and the
+         * emission.
+         *
+         * <h2>What a resume does not have to repair</h2>
+         * Nothing, and deliberately nothing: this is one volatile write and touches no simulation state,
+         * because the pass thread may not reach into a {@link ModelSimulation} that this loop's thread
+         * owns. The first step after a resume measures the whole suspended interval, and both consumers
+         * of that interval already clamp it — the solver banks fractional time up to its configured
+         * substep ceiling and discards the remainder, and the walk cycle clamps its own step. So a model
+         * suspended for a minute catches up by a bounded amount rather than diverging.
+         *
+         * <p>{@link SimulationLoop#reload()} still rebuilds a suspended registration, which is why
+         * nothing above has to worry about a calibration that moved while a model was off: suspension
+         * gates the stepping and not the membership, so a reload reaches every bound model whether or not
+         * anybody is looking at it.
+         *
+         * <p>No effect once the membership has been given up: a model that has been unregistered stays
+         * unregistered.
+         *
+         * @param stepping whether iterations should step this simulation
+         * @return whether this call changed anything
+         */
+        public boolean setStepping(boolean stepping) {
+            if (!this.active || this.stepping == stepping) {
+                return false;
+            }
+            this.stepping = stepping;
+            return true;
+        }
+
+        /** Whether an iteration currently steps this simulation. */
+        public boolean isStepping() {
+            return this.active && this.stepping;
         }
 
         /**

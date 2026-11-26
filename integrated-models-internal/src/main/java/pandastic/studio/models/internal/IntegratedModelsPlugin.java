@@ -16,9 +16,14 @@ import pandastic.studio.models.api.input.PlayerInputController;
 import pandastic.studio.models.api.model.ModelManager;
 import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.vehicle.VehicleBinder;
+import pandastic.studio.models.internal.command.HealthCommand;
 import pandastic.studio.models.internal.command.MenuCommand;
 import pandastic.studio.models.internal.command.ReloadCommand;
+import pandastic.studio.models.internal.command.ReloadHistory;
 import pandastic.studio.models.internal.command.ReloadReport;
+import pandastic.studio.models.internal.command.StatsCommand;
+import pandastic.studio.models.internal.command.StatusCapture;
+import pandastic.studio.models.internal.command.StatusSource;
 import pandastic.studio.models.internal.config.ConfigReloadResult;
 import pandastic.studio.models.internal.menu.EntitySchedulerMenuPresenter;
 import pandastic.studio.models.internal.menu.LibraryModelCatalogue;
@@ -240,14 +245,24 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
      * <p>The two halves of {@link ReloadReport} are read in that order on purpose: the rig count is
      * meaningful only after the reload that re-read the rigs, and it is taken on the same thread
      * immediately afterwards so that nothing can have changed it in between.
+     *
+     * <h2>The reload is wrapped so the health command can report it</h2>
+     * The configuration layer keeps no history — it publishes a snapshot and forgets how it got there —
+     * so a refused reload is the one degradation on this server that is invisible afterwards: the
+     * previous values stay live by identity, and a server running on refused files looks exactly like a
+     * server nobody edited. {@link ReloadHistory#observing} records the outcome of whatever it wraps and
+     * changes nothing else, which is why it goes around the operation rather than inside the command.
      */
     private void registerCommands() {
+        final ReloadHistory reloads = new ReloadHistory();
         final ReloadCommand reload = new ReloadCommand(
                 runtime().configs()::command,
-                () -> new ReloadReport(reloadConfiguration(), getRigs().size()),
+                reloads.observing(() -> new ReloadReport(reloadConfiguration(), getRigs().size())),
                 ReloadCommand.asyncOn(this),
                 (message, thrown) -> getComponentLogger()
                         .error(Component.text(message, NamedTextColor.RED), thrown));
+
+        final StatusSource status = statusSource(reloads);
 
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event ->
                 {
@@ -257,7 +272,47 @@ public class IntegratedModelsPlugin extends JavaPlugin implements IntegratedMode
                             MenuCommand.ALIASES, new MenuCommand(
                                     Objects.requireNonNull(this.menu, "Menu service is not initialized"),
                                     runtime().configs()::command));
+                    event.registrar().register(HealthCommand.NAME, HealthCommand.DESCRIPTION,
+                            HealthCommand.ALIASES,
+                            new HealthCommand(status, runtime().configs()::command));
+                    event.registrar().register(StatsCommand.NAME, StatsCommand.DESCRIPTION,
+                            StatsCommand.ALIASES,
+                            new StatsCommand(status, runtime().configs()::command));
                 });
+    }
+
+    /**
+     * Where the two status commands read what this server is doing.
+     *
+     * <p>One capture shared by both, because they report on the same server and a second one would be a
+     * second object holding the same references. Every argument is something only this class can reach;
+     * the reading, the counting and the verdict are {@link StatusCapture}'s and
+     * {@link pandastic.studio.models.internal.command.StatusSnapshot}'s.
+     *
+     * <p>The backend resolution is passed as the value rather than as a supplier: it is resolved once in
+     * a class-initialiser holder and cannot be re-pointed, so re-reading it per invocation would be the
+     * same answer at the cost of pretending it could change.
+     *
+     * @param reloads what the last observed reload did
+     * @return the source both commands are built on
+     */
+    private @NotNull StatusSource statusSource(@NotNull ReloadHistory reloads) {
+        final ModelRuntime live = runtime();
+        return new StatusCapture(
+                ModelRenderBackends.resolution(),
+                () -> live.configs().snapshot().revision(),
+                reloads,
+                live::rigs,
+                live.loop(),
+                live.drivers(),
+                live.simulationSettings(),
+                live.modelManager(),
+                () -> live.models().size(),
+                () -> live.decorations().size(),
+                () -> live.vehicles().size(),
+                live::creatureAi,
+                live::aiUnavailableReason,
+                live.inputController());
     }
 
     private @NotNull ModelRuntime runtime() {

@@ -92,7 +92,7 @@ class VehicleBinderImplTest {
         // Pure, so it costs nothing to do first, and it names the component. Asserted to happen before
         // the thread check by refusing both at once and expecting the profile's complaint.
         this.host.owned(false);
-        final VehicleProfile tooFast = new VehicleProfile(
+        final VehicleProfile tooFast = VehicleProfile.withoutTerrain(
                 50F, 0F, 0F, 0.5F, 0.5F, 0F, 1F, 1F, ControlScheme.TURNING);
 
         assertTrue(assertThrows(IllegalArgumentException.class,

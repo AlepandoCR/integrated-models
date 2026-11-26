@@ -31,6 +31,13 @@ import java.util.Objects;
  * a consumer wiring four seats against a rig a rigger is still editing should not have its vehicle fail
  * to create because seat three is not in the file yet. {@link #unmatched(SeatPlan)} is how it finds out,
  * and it is worth calling once at start-up.
+ *
+ * <h2>When to reach for {@link VehicleController} instead, or as well</h2>
+ * This type is right when the behaviour is a handful of independent reactions — a horn, a hatch, a
+ * passenger waving — because those compose and none of them owns anything. It is the wrong shape for
+ * behaviour with state: a turret angle or a submarine's trim captured in several lambdas that have to
+ * agree is a set of invariants with no owner. That is what a controller is for, and a vehicle may have
+ * both. Per seat, this seat's composed listener runs first and the controller second.
  */
 public final class VehicleControls {
 

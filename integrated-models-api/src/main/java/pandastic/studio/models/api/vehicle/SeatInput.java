@@ -21,6 +21,11 @@ import java.util.Objects;
  * <p>It also means a listener must not go and ask the controller again. Two reads inside one step can
  * straddle a publication, which is the hazard {@code PlayerInputController}'s own notes open with.
  *
+ * <p>One instance per occupied seat per step, and both of the consumer's mechanisms get <em>that</em>
+ * instance: the seat's {@link SeatInputListener} first, then {@link VehicleController#onPlayerInput}.
+ * So they cannot disagree about what the rider did either, and a consumer that supplies both pays one
+ * allocation rather than two.
+ *
  * <h2>Which thread this arrives on, and what that permits</h2>
  * The thread that owns the vehicle's root entity, inside the vehicle's own scheduled step. So a listener
  * may read and write the vehicle, the rider and anything else in that region — and must not block,

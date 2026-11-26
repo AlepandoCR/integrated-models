@@ -16,6 +16,43 @@ import java.util.Objects;
  * as an {@link InputIssue} at registration, which is the last moment at which the information is still
  * actionable.
  *
+ * <h2>The matrix, which is the surprising part</h2>
+ * Two capture sources, two families of input, and two things a consumer might want to do with one. The
+ * combinations are <strong>not</strong> symmetrical, and the asymmetry is the platform's rather than
+ * this plugin's: the platform's movement notification is not cancellable and its action notifications
+ * are. Everything else in this type is a consequence of that one fact.
+ *
+ * <table border="1">
+ *   <caption>What each source can do with each family</caption>
+ *   <tr>
+ *     <th></th>
+ *     <th>{@link InputFamily#MOVEMENT} — the seven held keys</th>
+ *     <th>{@link InputFamily#ACTION} — the five momentary inputs</th>
+ *   </tr>
+ *   <tr>
+ *     <th>Platform source<br>(always present)</th>
+ *     <td><strong>observe</strong> — {@link #OBSERVE_MOVEMENT}<br>
+ *         suppress: <strong>no</strong>, the notification is not cancellable</td>
+ *     <td><strong>observe</strong> — {@link #OBSERVE_ACTIONS}<br>
+ *         <strong>suppress</strong> — {@link #SUPPRESS_ACTIONS}</td>
+ *   </tr>
+ *   <tr>
+ *     <th>Packet source<br>(needs a server-internals adapter)</th>
+ *     <td><strong>observe</strong>, and before the server acts —
+ *         {@link #OBSERVE_BEFORE_SERVER}<br>
+ *         <strong>suppress</strong> — {@link #SUPPRESS_MOVEMENT}</td>
+ *     <td>nothing it adds: the platform already sees and stops these</td>
+ *   </tr>
+ * </table>
+ *
+ * <p>So on a server with no adapter the one cell that is empty is <em>stopping a movement key</em>, and
+ * {@link InputResponse#SUPPRESS} on a movement combination is the one binding that is reported at
+ * registration and then does less than it says. Observation of both families, and suppression of
+ * actions, are always available. The three questions a consumer should actually ask are
+ * {@link PlayerInputController#canObserve(InputFamily)},
+ * {@link PlayerInputController#canSuppress(InputFamily)} and — once, at start-up —
+ * {@link PlayerInputController#unavailableReason()}.
+ *
  * <h2>The two sources, and what each brings</h2>
  * Capture sits behind a seam with two implementations, and neither is a superset of the other in every
  * respect:

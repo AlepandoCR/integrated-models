@@ -92,9 +92,12 @@ class ModelRuntimeTest {
                         "the AI service has to be published when an adapter resolved"),
                 () -> assertTrue(harness.runtime().loop().isRunning()),
                 () -> assertTrue(harness.runtime().drivers().isRunning()),
-                // Two repeating tasks for the whole server, dispatched once: the simulation loop and
-                // the decoration driver loop. Anything more would be a loop per model.
-                () -> assertEquals(2, harness.scheduler().dispatches().size()));
+                () -> assertTrue(harness.runtime().view().isRunning()),
+                // Three repeating tasks for the whole server, each dispatched once: the simulation loop,
+                // the decoration driver loop and the view culling pass. Anything more would be a loop
+                // per model. The per-player viewer samplers are not among them — those are entity
+                // scheduled, which is the one thing this scheduler is not.
+                () -> assertEquals(3, harness.scheduler().dispatches().size()));
     }
 
     @Test
@@ -112,8 +115,10 @@ class ModelRuntimeTest {
                 // model standing still with a tracker open.
                 () -> assertEquals(1, harness.runtime().loop().size()),
                 () -> assertEquals(1, harness.runtime().models().size()),
+                // Past the three dispatches start() recorded: the simulation loop, the decoration
+                // driver loop and the view culling pass.
                 () -> assertEquals(List.of("model0-render", "model0-schedule"),
-                        this.journal.events().subList(2, this.journal.events().size()),
+                        this.journal.events().subList(3, this.journal.events().size()),
                         "a spawn opens the renderer-side binding and then dispatches the sampler"));
     }
 
@@ -174,7 +179,7 @@ class ModelRuntimeTest {
     // ---------------------------------------------------------------- shutdown
 
     @Test
-    void shutdownStopsBothOffTickLoopsBeforeItTouchesAnythingInTheWorld() {
+    void shutdownStopsEveryOffTickLoopBeforeItTouchesAnythingInTheWorld() {
         final RuntimeFixtures.Harness harness = started();
         spawnOneOfEverything(harness);
         this.journal.clear();
@@ -183,17 +188,18 @@ class ModelRuntimeTest {
 
         final List<String> annotated = this.journal.annotated();
         assertAll(
-                () -> assertEquals(List.of("cancel", "cancel"),
-                        this.journal.events().subList(0, 2),
-                        "both server-wide tasks are cancelled before anything else happens"),
-                // The claim the annotation exists for: by the time any teardown is recorded, neither
+                () -> assertEquals(List.of("cancel", "cancel", "cancel"),
+                        this.journal.events().subList(0, 3),
+                        "all three server-wide tasks are cancelled before anything else happens"),
+                // The claim the annotation exists for: by the time any teardown is recorded, no
                 // loop is live. A pass that kept running would be writing poses for models being
                 // released, and no entry below could have been written while one was.
-                () -> assertTrue(annotated.subList(2, annotated.size()).stream()
+                () -> assertTrue(annotated.subList(3, annotated.size()).stream()
                                 .allMatch(entry -> entry.endsWith("@loop=stopped,drivers=stopped")),
-                        () -> "every teardown must happen with both loops stopped: " + annotated),
+                        () -> "every teardown must happen with the loops stopped: " + annotated),
                 () -> assertFalse(harness.runtime().loop().isRunning()),
-                () -> assertFalse(harness.runtime().drivers().isRunning()));
+                () -> assertFalse(harness.runtime().drivers().isRunning()),
+                () -> assertFalse(harness.runtime().view().isRunning()));
     }
 
     @Test
@@ -213,6 +219,7 @@ class ModelRuntimeTest {
         assertEquals(List.of(
                         "cancel",             // the simulation loop
                         "cancel",             // the decoration driver loop
+                        "cancel",             // the view culling pass
                         "vehicle0-cancel",    // the vehicle's control loop
                         "model1-cancel",      // its visual's sampler
                         "model1-detach",

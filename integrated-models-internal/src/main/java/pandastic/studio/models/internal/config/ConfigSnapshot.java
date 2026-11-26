@@ -133,10 +133,12 @@ public record ConfigSnapshot(
     /**
      * The values of {@code vehicle.yml} that no api type carries.
      *
-     * <p>All four describe the <em>control loop</em> rather than the vehicle: how often it decides, how
-     * long a gap it will integrate across, how far it may write in place, and when it stops writing at
-     * all. What a vehicle is allowed to <em>be</em> is {@link VehicleBounds}, which the api declares
-     * because the profile validator lives there.
+     * <p>The first four describe the <em>control loop</em> rather than the vehicle: how often it decides,
+     * how long a gap it will integrate across, how far it may write in place, and when it stops writing
+     * at all. What a vehicle is allowed to <em>be</em> is {@link VehicleBounds}, which the api declares
+     * because the profile validator lives there — and that is also where the terrain <em>ceilings</em>
+     * from this file end up, nested inside {@link VehicleBounds#terrain()}. Only the per-kind terrain
+     * <em>defaults</em> are here, because nothing in the api inherits anything.
      *
      * @param controlPeriodTicks       ticks between two decisions about where a vehicle is
      * @param maxStepTicks             longest gap one step will integrate across
@@ -147,13 +149,29 @@ public record ConfigSnapshot(
      *                                 {@link #view()} and {@link #binding()} and for the same reason —
      *                                 the vehicle layer's settings source hands this straight through,
      *                                 so the object a control step compares and reads is this one
+     * @param terrainDefaults          the terrain response each vehicle kind inherits when its own
+     *                                 profile declares none. Carried whole for the same reason
+     *                                 {@code seats} is: the vehicle layer's settings source hands it
+     *                                 through without rebuilding it, so its identity is stable for as
+     *                                 long as the configuration behind it is
+     * @param terrainSampling          how often a vehicle may read the blocks under it: the movement and
+     *                                 turn deadbands, the minimum interval, the age at which a reading
+     *                                 expires and whether an unseen vehicle reads at all. Carried whole
+     *                                 for the same reason the two above are. It is the only group of keys
+     *                                 in {@code vehicle.yml} about cost rather than behaviour, because
+     *                                 the terrain reaction is the only thing in this plugin that reads
+     *                                 blocks — and a block read cannot be moved off the thread that owns
+     *                                 the chunk
      */
     public record VehicleOptions(
             int controlPeriodTicks,
             float maxStepTicks,
             float maxLocalStepBlocks,
             float restSpeedBlocksPerTick,
-            @NotNull pandastic.studio.models.internal.vehicle.SeatSettings seats
+            @NotNull pandastic.studio.models.internal.vehicle.SeatSettings seats,
+            @NotNull pandastic.studio.models.internal.vehicle.VehicleSettings.TerrainDefaults
+                    terrainDefaults,
+            @NotNull pandastic.studio.models.internal.vehicle.TerrainSampling terrainSampling
     ) {
     }
 

@@ -580,6 +580,57 @@ class VehicleImplTest {
     }
 
     @Test
+    void aMovingVehiclesRiderIsFollowedOnEveryStepThatDisplacedIt() {
+        // The ordinary case, kept as a guard. A rider is not a passenger of the root — they ride a
+        // carrier this layer moves by hand — so "the vehicle moved" and "the rider moved" are two
+        // separate writes, and only the first of them is the platform's problem.
+        final VehicleImpl vehicle = primed();
+        vehicle.mount(StubPlayer.named("alepando"));
+        this.host.holding(RiderIntent.ofBits(RiderIntent.FORWARD_BIT));
+        final FakeSeatCarrier carrier = this.host.onlyCarrier();
+
+        for (int step = 0; step < 3; step++) {
+            this.clock.advanceTicks(1.0D);
+            this.host.runOnce();
+        }
+
+        assertAll(
+                // A quarter of a block of acceleration a tick: 0.25, then 0.5, then 0.75.
+                () -> assertEquals(1.5D, this.host.z(), EPSILON),
+                () -> assertEquals(3, carrier.moves(), "one follow per step that displaced the root"),
+                () -> assertEquals(this.host.z(), carrier.z(), EPSILON),
+                () -> assertSame(vehicle.getRider().orElseThrow(), carrier.rider())
+        );
+    }
+
+    @Test
+    void theStepThatStartsARelocationStillFollowsTheSeats() {
+        // A seat carrier is not a passenger of the root, so the platform's own teleport does not bring
+        // it along. This step used to return before the follow, which on a host with no in-place move —
+        // where every displacement is a relocation — meant the riders were never moved at all while the
+        // vehicle was driving. They are now sent to where the relocation is taking the root, which is the
+        // one position that is both known and useful while the entity itself cannot be read.
+        this.host.localMove(false);
+        final VehicleImpl vehicle = primed();
+        vehicle.mount(StubPlayer.named("alepando"));
+        this.host.holding(RiderIntent.ofBits(RiderIntent.FORWARD_BIT));
+        final FakeSeatCarrier carrier = this.host.onlyCarrier();
+        this.host.clearJournal();
+
+        this.clock.advanceTicks(1.0D);
+        this.host.runOnce();
+
+        assertAll(
+                () -> assertTrue(vehicle.isRelocating()),
+                () -> assertEquals(0.25D, this.host.z(), EPSILON, "where the relocation was sent"),
+                () -> assertEquals(1, carrier.moves()),
+                () -> assertEquals(this.host.z(), carrier.z(), EPSILON),
+                () -> assertEquals(List.of("teleport", "carrier0.moveLocal"), this.host.journal(),
+                        "the root is sent first, then the riders follow it")
+        );
+    }
+
+    @Test
     void aStepThatThrowsIsReportedAndTheLoopSurvives() {
         // The platform swallows anything that escapes a scheduled body and keeps the task alive, so an
         // uncaught failure would be a vehicle that quietly stops responding and never explains itself.

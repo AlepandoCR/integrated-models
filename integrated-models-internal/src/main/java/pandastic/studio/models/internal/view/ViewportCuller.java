@@ -7,6 +7,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -60,13 +61,13 @@ public final class ViewportCuller {
         // would be a send to nobody — but leaving them recorded would both leak the id and, if they
         // reconnect, have the model believe they already hold it. That is the one state that never
         // repairs itself, because a model only ever sends deltas to a viewer it thinks is current.
+        //
+        // Done by the viewport rather than here, and that is a performance fact rather than tidiness:
+        // this loop runs over every model on every pass, and a sweep written from outside has to copy
+        // the recorded set before removing from it. See ModelViewport#forgetAbsent.
+        final Set<UUID> present = viewers.keySet();
         for (final CullableModel model : models) {
-            for (final UUID viewer : List.copyOf(model.viewport().viewers())) {
-                if (!viewers.containsKey(viewer)) {
-                    model.viewport().forget(viewer);
-                    forgotten++;
-                }
-            }
+            forgotten += model.viewport().forgetAbsent(present);
         }
 
         for (final ViewerSnapshot viewer : viewers.values()) {
@@ -74,9 +75,14 @@ public final class ViewportCuller {
 
             for (final CullableModel model : models) {
                 final boolean alreadyShown = model.viewport().isShownTo(viewer.playerId());
+                // Measured once and handed on. The decision needs it and so does the ordering of the
+                // shows, and this loop is the widest in the plugin — four hundred models against forty
+                // players is sixteen thousand pairs a pass — so computing it twice was a world
+                // comparison, three subtractions and three multiplies per pair thrown away.
                 final double distanceSquared = viewer.distanceSquaredTo(
                         model.worldId(), model.cullX(), model.cullY(), model.cullZ());
-                final boolean wanted = shouldBeShown(model, viewer, settings, alreadyShown);
+                final boolean wanted =
+                        shouldBeShown(model, viewer, settings, alreadyShown, distanceSquared);
 
                 if (wanted == alreadyShown) {
                     continue;
@@ -131,12 +137,39 @@ public final class ViewportCuller {
             @NotNull ViewSettings settings,
             boolean alreadyShown
     ) {
+        return shouldBeShown(model, viewer, settings, alreadyShown,
+                viewer.distanceSquaredTo(
+                        model.worldId(), model.cullX(), model.cullY(), model.cullZ()));
+    }
+
+    /**
+     * {@link #shouldBeShown(CullableModel, ViewerSnapshot, ViewSettings, boolean)} against a distance the
+     * caller has already measured.
+     *
+     * <p>Exists because {@link #pass} needs the same distance to order the shows by, and this loop is
+     * per (model, viewer) <em>pair</em> — the only product-shaped cost in the plugin. Measuring it twice
+     * was a world comparison, three subtractions and three multiplies per pair discarded, and at four
+     * hundred models against forty players ten times a second that is a hundred and sixty thousand
+     * wasted distance computations a second.
+     *
+     * <p>The four-argument form is kept and delegates here, because every boundary case in this decision
+     * is much easier to pin without a pass around it and a test should not have to compute a distance to
+     * ask the question.
+     *
+     * @param distanceSquared {@link ViewerSnapshot#distanceSquaredTo} for this pair, which is
+     *                        {@link Double#POSITIVE_INFINITY} when the two are in different worlds. A
+     *                        caller that passes anything else is answering a different question
+     */
+    public static boolean shouldBeShown(
+            @NotNull CullableModel model,
+            @NotNull ViewerSnapshot viewer,
+            @NotNull ViewSettings settings,
+            boolean alreadyShown,
+            double distanceSquared
+    ) {
         if (!model.isCullable()) {
             return false;
         }
-
-        final double distanceSquared = viewer.distanceSquaredTo(
-                model.worldId(), model.cullX(), model.cullY(), model.cullZ());
 
         // Another world, or beyond the range. Infinity from a world mismatch falls out here.
         final double range = alreadyShown

@@ -107,6 +107,11 @@ public final class TrackerRenderBinding implements RenderBinding {
             throw new IllegalArgumentException("scale must be finite and greater than zero");
         }
         this.tracker.scaler(ModelScaler.entity().multiply(scale));
+        // Both halves, and both are needed. The scaler is what the renderer's own pass and its hitbox
+        // read; the sink's multiplier is what OUR emission reads. Setting only the scaler left the
+        // renderer applying the new scale and this sink writing its bind-time scale back on the next
+        // emission, so the change lasted until our next frame and no longer.
+        this.sink.uniformScale(scale);
     }
 
     @Override

@@ -54,6 +54,26 @@ final class FakeVehicleHost implements VehicleHost {
     private double z;
     private float yaw;
 
+    /** Whether this host has any terrain to report, which a host with no world does not. */
+    private boolean terrainKnown;
+
+    /** Whether the column ahead is readable, which it is not across a region boundary. */
+    private boolean aheadKnown = true;
+
+    private double surfaceY;
+    private double surfaceYAhead;
+    private int probeCount;
+
+    /**
+     * The buffer the last probe was handed, kept by reference on purpose.
+     *
+     * <p>So that a test can assert the vehicle fills <em>one</em> sample in place rather than handing out
+     * a fresh one per step. That is the only claim about allocation this layer makes that can be checked
+     * without measuring the heap, and it is the claim that matters: the whole point of the buffer is that
+     * a suppressed step has a previous reading still sitting in it.
+     */
+    private @Nullable TerrainSample lastProbed;
+
     private final @NotNull List<FakeSeatCarrier> carriers = new ArrayList<>();
     private @NotNull RiderIntent intent = RiderIntent.NONE;
 
@@ -86,6 +106,31 @@ final class FakeVehicleHost implements VehicleHost {
             return false;
         }
         sample.set(this.x, this.y, this.z, this.yaw);
+        return true;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A scripted hillside. Three states are reachable and all three are real: a reading taken, a
+     * reading whose column ahead was refused because another region owns it, and no reading at all. The
+     * journal line carries the reach, because the reach is derived from the profile and a test about that
+     * derivation has nothing else to look at.
+     */
+    @Override
+    public boolean probeTerrain(
+            @NotNull TerrainSample sample,
+            float reachBlocks,
+            float headingDegrees
+    ) {
+        this.journal.add("probe:" + reachBlocks);
+        this.probeCount++;
+        this.lastProbed = sample;
+        if (!this.terrainKnown) {
+            sample.unavailable();
+            return false;
+        }
+        sample.set(this.y, this.surfaceY, this.aheadKnown, this.surfaceYAhead);
         return true;
     }
 
@@ -323,6 +368,59 @@ final class FakeVehicleHost implements VehicleHost {
         return this;
     }
 
+    /**
+     * Gives this host a hillside to report: a surface under the vehicle and one in the column ahead.
+     *
+     * @param under the top face of the surface the vehicle is on
+     * @param ahead the top face of the surface one block ahead
+     */
+    FakeVehicleHost terrain(double under, double ahead) {
+        this.terrainKnown = true;
+        this.aheadKnown = true;
+        this.surfaceY = under;
+        this.surfaceYAhead = ahead;
+        return this;
+    }
+
+    /**
+     * Makes the column ahead unreadable, which is what a probe across a region boundary meets.
+     *
+     * <p>The column under the vehicle is still reported, because the region that owns the vehicle owns
+     * the chunk it is in — that half is never refused.
+     */
+    FakeVehicleHost aheadUnknown() {
+        this.aheadKnown = false;
+        return this;
+    }
+
+    /** How many times a terrain probe was asked for, so a test can assert it was not. */
+    int probeCount() {
+        return this.probeCount;
+    }
+
+    /** Forgets the count, for a test whose subject is the readings of one stretch of driving. */
+    void clearProbeCount() {
+        this.probeCount = 0;
+    }
+
+    /** The buffer the last probe was handed, for the reuse assertion. See the field. */
+    @Nullable TerrainSample lastProbedSample() {
+        return this.lastProbed;
+    }
+
+    /**
+     * Moves the hillside under the vehicle without moving the vehicle.
+     *
+     * <p>What a player building a ramp under a parked cart looks like from here, and the only way to
+     * exercise the one thing the movement deadband cannot notice on its own.
+     *
+     * @param ahead the new top face of the surface one block ahead
+     */
+    FakeVehicleHost terrainAhead(double ahead) {
+        this.surfaceYAhead = ahead;
+        return this;
+    }
+
     FakeVehicleHost at(double newX, double newY, double newZ, float newYaw) {
         this.x = newX;
         this.y = newY;
@@ -338,6 +436,11 @@ final class FakeVehicleHost implements VehicleHost {
 
     double x() {
         return this.x;
+    }
+
+    /** The root's world y, which is the only thing a terrain rise writes. */
+    double y() {
+        return this.y;
     }
 
     double z() {

@@ -10,22 +10,26 @@ import pandastic.studio.models.api.rig.Rig;
 import pandastic.studio.models.api.vehicle.BoardingOutcome;
 import pandastic.studio.models.api.vehicle.BoardingResult;
 import pandastic.studio.models.api.vehicle.MoveKind;
+import pandastic.studio.models.api.vehicle.PilotContext;
 import pandastic.studio.models.api.vehicle.RiderIntent;
 import pandastic.studio.models.api.vehicle.SeatInput;
 import pandastic.studio.models.api.vehicle.SeatInputListener;
 import pandastic.studio.models.api.vehicle.SeatOccupancy;
 import pandastic.studio.models.api.vehicle.SeatPlan;
 import pandastic.studio.models.api.vehicle.Vehicle;
+import pandastic.studio.models.api.vehicle.VehicleController;
 import pandastic.studio.models.api.vehicle.VehicleControls;
 import pandastic.studio.models.api.vehicle.VehicleMessages;
 import pandastic.studio.models.api.vehicle.VehicleMove;
 import pandastic.studio.models.api.vehicle.VehicleNotice;
 import pandastic.studio.models.api.vehicle.VehicleNoticeContext;
+import pandastic.studio.models.api.vehicle.VehiclePilot;
 import pandastic.studio.models.api.vehicle.VehicleProfile;
 import pandastic.studio.models.api.vehicle.VehicleSeat;
 import pandastic.studio.models.api.vehicle.VehicleSetup;
 import pandastic.studio.models.api.vehicle.VehicleState;
 import pandastic.studio.models.api.vehicle.VehicleSteering;
+import pandastic.studio.models.internal.input.InputFaultSink;
 import pandastic.studio.models.internal.sim.SimulationClock;
 import pandastic.studio.models.internal.sim.SimulationLogger;
 
@@ -85,8 +89,14 @@ import java.util.function.Consumer;
  * it leaves a tracker in the world that nothing will ever close.
  *
  * <h2>Teardown order, and stopping exactly once</h2>
- * The rule is <em>stop deciding, then release what was being decided about</em>: cancel the loop, forget
- * the rider, then put the rider down and release the visual. Three things can decide a vehicle is
+ * The rule is <em>stop deciding, then release what was being decided about</em>: cancel the loop, publish
+ * a stopped vehicle, tell the consumer's controller, tell the pilot, then put the rider down and release
+ * the visual. The controller comes before the release and not after, because
+ * {@link VehicleController#onClosed} is where a controller forgets its riders and the api promises they
+ * are still aboard for it; the pilot comes after the controller, because what it releases is this
+ * plugin's own — an {@link pandastic.studio.models.api.vehicle.AiPilot} uninstalls its plan there, and a
+ * controller that reads that plan's last decision must still be able to. Three things can decide a
+ * vehicle is
  * finished and they can decide it simultaneously — the platform's retired callback, a step finding its
  * root gone, and a caller, usually the plugin shutting down — so all three go through one monitor and one
  * latch.
@@ -129,6 +139,48 @@ import java.util.function.Consumer;
  * that seat's {@link SeatInputListener} after the move is applied. So the steering and a consumer's
  * listener see the same input from the same instant, and a listener that reacts to the jump key cannot
  * disagree with the step that did or did not act on it.
+ *
+ * <h2>Where the consumer's two mechanisms run, in order</h2>
+ * A consumer may supply {@link VehicleControls} — a map of per-seat listeners — or a
+ * {@link VehicleController} — one object per kind of vehicle — or both. Both are driven from the same
+ * pass over the same values, in one order, which is the order {@code VehicleController}'s own
+ * documentation promises:
+ *
+ * <ol>
+ *   <li>the move is applied, the model's rotation is pushed and the seats are followed, so nothing below
+ *       sees a rider whose seat this step has just taken away;</li>
+ *   <li>then, per occupied seat in index order, the driver first: that seat's composed
+ *       {@link SeatInputListener}, then {@link VehicleController#onPlayerInput} — the same
+ *       {@link SeatInput} instance for both, so they cannot disagree;</li>
+ *   <li>then {@link VehicleController#onStep} once, with the measured ticks this step integrated.</li>
+ * </ol>
+ *
+ * <p>Specific before general, which is what {@link VehicleControls#listenerFor} already does within one
+ * seat — index, then name, then catch-all — with the controller as the most general case of all. The
+ * whole pass is skipped when there is nothing wired, which costs one reference comparison and is the
+ * common case.
+ *
+ * <h2>Where the intent comes from when nobody is driving</h2>
+ * The solver has always read the <strong>driver's seat</strong>, and it still does. What
+ * {@link VehiclePilot} adds is a source for the steps on which that seat is empty: one call, before
+ * anything is decided, whose answer is fed to the same {@link VehicleSteering#of} translation a rider's
+ * keys go through. So a piloted vehicle is subject to its own control scheme, its own profile and its own
+ * terrain response, and the position still has exactly one writer — this step.
+ *
+ * <p>A rider wins, unconditionally and with no handover logic: the pilot is asked only while
+ * {@link VehicleSeats#driver()} is {@code null}, so the moment somebody boards the driver's seat their
+ * keys steer and the moment they leave the pilot resumes. There is never a step with two deciders,
+ * because the condition is evaluated once per step on the thread that also seats people.
+ *
+ * <p>The pilot's own failures are contained and the vehicle coasts; unlike a {@link VehicleController} it
+ * is not detached, because detaching it would leave an autonomous vehicle parked for ever with nothing
+ * saying why. See {@link #pilotIntent}.
+ *
+ * <p>The other three hooks hang off what already noticed the thing they are about:
+ * {@link VehicleController#onSeated} and {@link VehicleController#onVacated} off {@link SeatEvents},
+ * after the rider's own message, and {@link VehicleController#onClosed} off {@link #stop(boolean)},
+ * before the riders are put down. None of them is on the step, which is why the controller's own
+ * documentation states a different thread rule for the last of them.
  */
 public final class VehicleImpl implements Vehicle {
 
@@ -149,6 +201,33 @@ public final class VehicleImpl implements Vehicle {
 
     /** Where a rider's input is read, once per occupied seat per step. */
     private final @NotNull RiderInputSource inputs;
+
+    /**
+     * What steers this vehicle while the driver's seat is empty.
+     *
+     * <p>{@link VehiclePilot#NONE} when the consumer supplied none, which is the common case and is why
+     * {@link #piloted} exists rather than a null check — the gate is one reference comparison made once,
+     * at construction, against an immutable field.
+     */
+    private final @NotNull VehiclePilot pilot;
+
+    /**
+     * Whether {@link #pilot} is anything at all.
+     *
+     * <p>Asked once at construction, because the pilot is fixed for this vehicle's life. It gates the
+     * whole synthetic-input path, so a vehicle with no pilot pays one boolean read per step for the seam
+     * existing.
+     */
+    private final boolean piloted;
+
+    /**
+     * The consumer's {@link VehicleController}, contained.
+     *
+     * <p>{@link VehicleControllerDispatch#INERT} when the setup supplied none, which is the common case
+     * and costs nothing per step. Every call into the consumer goes through this and never through
+     * {@code setup.controller()} directly — that is where the exception policy lives.
+     */
+    private final @NotNull VehicleControllerDispatch controller;
 
     /**
      * Told when a seat fills or empties, which is where the messages come from.
@@ -204,8 +283,55 @@ public final class VehicleImpl implements Vehicle {
      */
     private final @NotNull VehicleSample sample = new VehicleSample();
 
+    /**
+     * Reused every step, and confined to the owning region thread.
+     *
+     * <p>Filled by {@link VehicleHost#probeTerrain} before anything is decided and read once, by the
+     * terrain solver, inside the same step. A buffer for the reason {@link #sample} is one; see
+     * {@link TerrainSample}.
+     */
+    private final @NotNull TerrainSample terrain = new TerrainSample();
+
+    /**
+     * Decides whether {@link #terrain} is worth filling again, and is the whole of the block-read saving.
+     *
+     * <p>Reused every step and confined to the owning region thread, like the sample it gates. It is
+     * asked from the position and heading this step has already read, so the decision costs no world
+     * access at all — see {@link TerrainSampleGate}.
+     */
+    private final @NotNull TerrainSampleGate terrainGate = new TerrainSampleGate();
+
+    /**
+     * Whether this vehicle's profile asks for any terrain reaction at all.
+     *
+     * <p>Asked once at construction, because it is a property of an immutable profile. It gates the
+     * probe, so a vehicle that says nothing about terrain reads no blocks — and it gates the rotation
+     * push, which matters more: taking over the renderer's whole-model rotation to hand it back the
+     * heading it already had would trade the renderer's own body smoothing for nothing. See
+     * {@link VehicleVisual#setBodyRotation}.
+     */
+    private final boolean terrainActive;
+
+    /**
+     * How far above and below itself a probe looks for a surface, in blocks.
+     *
+     * <p>Derived from the profile rather than configured: the step height is how far up the vehicle cares
+     * about, and one block is how far it has to see either way for a grade between two adjacent columns
+     * to exist at all. A key for it would be a second statement of the step height that could disagree
+     * with the first.
+     */
+    private final float terrainReachBlocks;
+
     /** Published by the control step, read from anywhere. One store per step, of a complete value. */
     private volatile @NotNull VehicleState state = VehicleState.STOPPED;
+
+    /**
+     * Published by the control step, read from anywhere.
+     *
+     * <p>How the model is sitting on the terrain, and the state the next step's blend starts from. One
+     * store of one complete value per step, for the reason {@link #state} is.
+     */
+    private volatile @NotNull TerrainAttitude attitude = TerrainAttitude.LEVEL;
 
     /** Published by the control step, read from anywhere. */
     private volatile @NotNull VehicleSteering steering = VehicleSteering.NEUTRAL;
@@ -217,10 +343,16 @@ public final class VehicleImpl implements Vehicle {
      * Whether a relocation is in flight.
      *
      * <p>Set on the region thread and cleared on whichever thread finishes the relocation, which is why
-     * it is volatile. While it is set the control loop decides nothing and writes nothing: a
-     * cross-region teleport removes the entity and its whole passenger tree from the world before
-     * re-adding it, so for part of that window there is no entity to move and moving it anyway fails
-     * confusingly later rather than immediately.
+     * it is volatile. While it is set the control loop decides nothing and writes nothing <em>to the
+     * root</em>: a cross-region teleport removes the entity and its whole passenger tree from the world
+     * before re-adding it, so for part of that window there is no entity to move and moving it anyway
+     * fails confusingly later rather than immediately.
+     *
+     * <p>It is deliberately <strong>not</strong> a gate on the two things that are not writes to the
+     * root. The model's rotation is a renderer-side value that reaches no entity, and the seat carriers
+     * are their own entities with their own schedulers and their own ownership checks — so both continue
+     * across the step that starts a relocation. Gating them was this layer's longest-standing visible
+     * defect: a moving vehicle showed no lean and left its riders behind.
      */
     private volatile boolean relocating;
 
@@ -229,6 +361,22 @@ public final class VehicleImpl implements Vehicle {
 
     /** Region-confined: whether {@link #previousNanos} means anything yet. */
     private boolean clockSeeded;
+
+    /**
+     * Region-confined: the rotation last handed to the visual, and whether one ever was.
+     *
+     * <p>The emission gate. A rotation travels as two bytes, so an angle that has moved by less than one
+     * of them is a packet that cannot change a pixel; {@link TerrainSolver#isVisiblyDifferent} is where
+     * that fact is written down. Kept here rather than derived from the attitude because the question is
+     * "what does the client already have", which is about what was sent and not about what was decided.
+     */
+    private float sentPitchDegrees;
+
+    /** Region-confined: see {@link #sentPitchDegrees}. */
+    private float sentYawDegrees;
+
+    /** Region-confined: whether a rotation has ever been pushed, so the first one is always sent. */
+    private boolean rotationSeeded;
 
     /** The single-use latch. Guarded by {@code this}. */
     private boolean stopped;
@@ -307,6 +455,81 @@ public final class VehicleImpl implements Vehicle {
             @NotNull RiderInputSource inputs,
             @NotNull Consumer<VehicleImpl> onStopped
     ) {
+        this(rig, profile, host, visual, settings, clock, logger, chartSink, setup, inputs,
+                reportingThrough(logger), onStopped);
+    }
+
+    /**
+     * @param rig       the rig this vehicle's visual drives, held for diagnostics and for the api
+     * @param profile   how this vehicle drives, already validated against the operator's bounds
+     * @param host      the root entity, and the only thing allowed to touch it
+     * @param visual    the model riding on it, or {@link VehicleVisual#NONE}
+     * @param settings  where the clamps and thresholds come from
+     * @param clock     the monotonic clock each step differences
+     * @param logger    where a step that threw is reported, and where a consumer's seat listener that
+     *                  threw is reported too
+     * @param chartSink where the seat chart is written when this vehicle starts
+     * @param setup     what this vehicle says to its riders, what each seat's inputs do, and the one
+     *                  controller that owns this kind of vehicle's behaviour
+     * @param inputs    where a rider's input is read
+     * @param faults    where the consumer's {@link VehicleController} goes when it throws, and what
+     *                  decides whether to keep calling it. The production value is the input layer's own
+     *                  throttling sink, so a controller and a bound input handler are judged by one
+     *                  policy out of one pair of keys; see {@link VehicleControllerDispatch}
+     * @param onStopped told once when this vehicle has torn down, whether it ever started or not
+     */
+    public VehicleImpl(
+            @NotNull Rig rig,
+            @NotNull VehicleProfile profile,
+            @NotNull VehicleHost host,
+            @NotNull VehicleVisual visual,
+            @NotNull VehicleSettingsSource settings,
+            @NotNull SimulationClock clock,
+            @NotNull SimulationLogger logger,
+            @NotNull SeatChartSink chartSink,
+            @NotNull VehicleSetup setup,
+            @NotNull RiderInputSource inputs,
+            @NotNull InputFaultSink faults,
+            @NotNull Consumer<VehicleImpl> onStopped
+    ) {
+        this(rig, profile, host, visual, settings, clock, logger, chartSink, setup, inputs, faults,
+                VehiclePilot.NONE, onStopped);
+    }
+
+    /**
+     * @param rig       the rig this vehicle's visual drives, held for diagnostics and for the api
+     * @param profile   how this vehicle drives, already validated against the operator's bounds
+     * @param host      the root entity, and the only thing allowed to touch it
+     * @param visual    the model riding on it, or {@link VehicleVisual#NONE}
+     * @param settings  where the clamps and thresholds come from
+     * @param clock     the monotonic clock each step differences
+     * @param logger    where a step that threw is reported, and where a consumer's seat listener or pilot
+     *                  that threw is reported too
+     * @param chartSink where the seat chart is written when this vehicle starts
+     * @param setup     what this vehicle says to its riders, what each seat's inputs do, and the one
+     *                  controller that owns this kind of vehicle's behaviour
+     * @param inputs    where a rider's input is read
+     * @param faults    where the consumer's {@link VehicleController} goes when it throws
+     * @param pilot     what steers this vehicle while the driver's seat is empty, or
+     *                  {@link VehiclePilot#NONE}. Fixed for the vehicle's life, so there is never a step
+     *                  on which the thing deciding has changed under a rider
+     * @param onStopped told once when this vehicle has torn down, whether it ever started or not
+     */
+    public VehicleImpl(
+            @NotNull Rig rig,
+            @NotNull VehicleProfile profile,
+            @NotNull VehicleHost host,
+            @NotNull VehicleVisual visual,
+            @NotNull VehicleSettingsSource settings,
+            @NotNull SimulationClock clock,
+            @NotNull SimulationLogger logger,
+            @NotNull SeatChartSink chartSink,
+            @NotNull VehicleSetup setup,
+            @NotNull RiderInputSource inputs,
+            @NotNull InputFaultSink faults,
+            @NotNull VehiclePilot pilot,
+            @NotNull Consumer<VehicleImpl> onStopped
+    ) {
         this.rig = Objects.requireNonNull(rig, "rig");
         this.profile = Objects.requireNonNull(profile, "profile");
         this.host = Objects.requireNonNull(host, "host");
@@ -317,8 +540,43 @@ public final class VehicleImpl implements Vehicle {
         this.chartSink = Objects.requireNonNull(chartSink, "chartSink");
         this.setup = Objects.requireNonNull(setup, "setup");
         this.inputs = Objects.requireNonNull(inputs, "inputs");
+        this.pilot = Objects.requireNonNull(pilot, "pilot");
+        // One comparison against the identity value, made once: the pilot is final, so the answer cannot
+        // change and a step need not re-ask it.
+        this.piloted = pilot != VehiclePilot.NONE;
         this.onStopped = Objects.requireNonNull(onStopped, "onStopped");
         this.seats = new VehicleSeats(rig, host, this.seatEvents);
+        this.controller = VehicleControllerDispatch.of(
+                setup.controller(), Objects.requireNonNull(faults, "faults"), rig.getName());
+        // Both derived from an immutable profile, so both are constants for this vehicle's life.
+        this.terrainActive = !profile.terrain().isInert();
+        this.terrainReachBlocks = Math.max(
+                profile.terrain().stepHeightBlocks(), TerrainSample.PROBE_RUN_BLOCKS);
+    }
+
+    /**
+     * The fault policy a caller that supplied none gets: report every time, never give up.
+     *
+     * <p>Not a second policy — it is the <em>unconfigured</em> one. The throttling interval and the
+     * number of consecutive failures that detaches a controller are both operator configuration, and a
+     * caller that handed over no sink has not said what either should be; inventing a figure here is
+     * exactly the hardcoded tunable this project refuses. Reporting every occurrence and never detaching
+     * is what a consumer's seat input listener has always got on this path, so a vehicle built through
+     * the shorter constructor behaves as it did before controllers existed.
+     *
+     * <p>The production path supplies the real sink; see the twelve-argument constructor.
+     *
+     * <p>Package-private rather than private so that {@link VehicleBinderImpl} can name it and keep one
+     * construction path: a binder with no sink to borrow needs this same fallback, and letting it reach
+     * the fallback is better than giving it a second constructor to pick between — two paths through a
+     * creation are two places a later argument can be forgotten.
+     */
+    static @NotNull InputFaultSink reportingThrough(@NotNull SimulationLogger logger) {
+        Objects.requireNonNull(logger, "logger");
+        return (described, failure) -> {
+            logger.error(described + " threw", failure);
+            return true;
+        };
     }
 
     @Override
@@ -682,9 +940,27 @@ public final class VehicleImpl implements Vehicle {
         // The heading is kept and the speeds are not. A reader that outlives the vehicle should see one
         // that has stopped where it was, rather than one still travelling or one spun to due south.
         this.state = new VehicleState(0F, 0F, this.state.yawDegrees());
+        // The same split the state makes: how the model was sitting is kept, the climb that will never
+        // finish is not. A reader that outlives the vehicle sees one that stopped where it was, leaning
+        // how it was, rather than one still part-way up a block.
+        this.attitude = this.attitude.withoutClimb();
         this.relocating = false;
 
-        // 3. and 4. Put the rider down, release the visual.
+        // 3. The consumer's controller, once, and before anything is released: the api promises its
+        //    riders are still aboard for this call, because the call is where a controller forgets them.
+        //    On whatever thread got here — a caller's, a step's, or the platform's retired callback,
+        //    which cannot defer to anywhere else — which is why that hook alone carries no thread
+        //    promise. A detached controller still gets it; see VehicleControllerDispatch.
+        this.controller.closed(this);
+
+        // 4. The pilot, after the consumer's own controller and before anything is released. After,
+        //    because the controller holds the consumer's invariants and this holds ours — an AiPilot
+        //    uninstalls a plan here, and a controller that wanted to read that plan's last decision in
+        //    onClosed must still be able to. Before the release, because releasing is what ends the
+        //    vehicle's existence and a pilot is told about a vehicle rather than about a wreck.
+        closePilot();
+
+        // 5. and 6. Put the rider down, release the visual.
         release(rootRetired);
 
         this.onStopped.accept(this);
@@ -777,6 +1053,10 @@ public final class VehicleImpl implements Vehicle {
         this.clockSeeded = true;
 
         if (this.relocating) {
+            // A step that lands while one is still in flight. Nothing is decided and nothing is pushed:
+            // there is no reading of the root to decide from, so there is also no new rotation and no new
+            // seat target — unlike the step that *started* the relocation, which decided a move and
+            // therefore still has both to deliver. See #pushRotation.
             return;
         }
         if (!this.host.readInto(this.sample)) {
@@ -791,6 +1071,14 @@ public final class VehicleImpl implements Vehicle {
         // the elapsed time and the threshold that decides whether the result is a teleport.
         final VehicleSettings current = this.settings.current();
 
+        // And one read of the host's capability, beside it and for the same reason: the decision below
+        // and the application that follows it must agree about which of the two ways of moving this step
+        // is using, and two reads could straddle them. Read here rather than copied into a field of this
+        // class, because the host already caches it — the seam promises it is fixed for the host's life
+        // — and a second copy would be the same fact stated twice with nothing keeping the two in step.
+        // The read is one virtual call returning a cached boolean.
+        final boolean localMove = this.host.supportsLocalMove();
+
         // One input read per occupied seat, before anything is decided. The driver's becomes the intent
         // the solver sees and every seat's is handed to its listener after the move — so the steering and
         // a consumer's listener cannot disagree about what a rider did within one step. Reading the
@@ -801,41 +1089,288 @@ public final class VehicleImpl implements Vehicle {
         // died or was removed — is noticed by the follow pass below, which reports it; by the time the
         // next step reads this there is no driver and the vehicle coasts. Nobody is promoted into the
         // empty seat.
-        final RiderIntent intent = RiderInputSource.intentOf(this.seats.driverInput().state());
+        //
+        // Unless something is piloting it, in which case an empty driver's seat is where the pilot's
+        // synthesised intent comes in. A rider wins outright: the question is asked once per step, on the
+        // thread that also seats people, so there is never a step with two deciders and no handover state
+        // to get wrong.
+        final RiderIntent intent = this.piloted && this.seats.driver() == null
+                ? pilotIntent(current, elapsedNanos)
+                : RiderInputSource.intentOf(this.seats.driverInput().state());
+
+        // At most one terrain reading per step, taken before anything is decided and read once — the same
+        // rule the snapshot and the rider's input follow, and for the same reason: two reads inside one
+        // step can disagree, and then the lean and the climb are answering different hillsides.
+        sampleTerrain(current, now);
 
         final VehicleState previous = this.state;
-        final VehicleStepper.Plan plan =
-                VehicleStepper.plan(previous, intent, this.profile, current, elapsedNanos);
+        final TerrainAttitude previousAttitude = this.attitude;
+        final VehicleStepper.Plan plan = VehicleStepper.plan(previous, intent, this.profile, current,
+                elapsedNanos, previousAttitude, this.terrain, localMove);
 
         this.steering = plan.steering();
         this.state = plan.move().next();
+        this.attitude = plan.terrain().next();
+
+        // One read of the relocation gate for the whole tail of this step, so the two decisions that
+        // depend on it cannot disagree about whether a relocation was started — the completion callback
+        // runs on the destination region's thread and may clear the flag at any point.
+        boolean relocated = false;
         if (!plan.isIdle()) {
             apply(plan, previous);
-            if (this.relocating) {
-                // The root is transiently out of the world, so there is no position to seat anybody
-                // relative to. The seats catch up on the step after the relocation completes, through
-                // their own teleports, which is what the carrier step ceiling is for.
-                return;
-            }
-            // Re-read, because the write that just happened may have been partly applied: a vehicle
-            // stopped by a wall is somewhere other than where it was asked to go, and a seat computed
-            // from the commanded position would put its rider inside the wall.
-            if (!this.host.readInto(this.sample)) {
+            relocated = this.relocating;
+            if (!relocated && !this.host.readInto(this.sample)) {
+                // Re-read, because the write that just happened may have been partly applied: a vehicle
+                // stopped by a wall is somewhere other than where it was asked to go, and a seat computed
+                // from the commanded position would put its rider inside the wall. Skipped for a
+                // relocation, where there is deliberately nothing to read back — see #relocate, which
+                // leaves the sample describing the destination it commanded.
                 stop(false);
                 return;
             }
         }
 
+        // Before the follow pass, because the whole-model rotation moves the locators a seat hangs off:
+        // a model that has just pitched has its seats somewhere other than where a level one did, and a
+        // follow computed first would put every rider a step behind the lean.
+        //
+        // And on a displaced step as much as a parked one, which is the owner's rule and was the defect
+        // here: the early return a relocation used to take meant a terrain-configured vehicle showed its
+        // lean and its pitch only while standing still. See #pushRotation for why a relocation in flight
+        // is not a reason to withhold it.
+        pushRotation(plan);
+
         // Then, and unconditionally. A parked vehicle still animates, and an animated locator moves the
         // seat hanging off it — gating this on the vehicle having moved would leave a rider behind
-        // whenever an idle clip breathed.
+        // whenever an idle clip breathed. It is also what carries the riders across a relocation: the
+        // carriers are not passengers of the root, so the platform's own teleport does not bring them,
+        // and a step that returned before this left every rider of a relocating vehicle standing where
+        // the vehicle used to be until some later step happened not to displace it.
         this.seats.follow(this.sample, current.seats());
 
-        // Last, after the follow pass, so a listener never sees a rider whose seat this step has just
-        // given up. Skipped entirely when the consumer wired nothing, which is the common case and
-        // costs one reference comparison.
-        if (!this.setup.controls().isEmpty()) {
+        if (relocated) {
+            // The one thing a relocation still costs, and it is what the published api already says
+            // about one rather than this class's convenience: a step whose root is transiently out of
+            // the world offers a consumer nothing it could act on, because acting means touching an
+            // entity that is mid-teleport — so VehicleController's hooks are not called. The rotation
+            // and the seats above are this plugin's own, they touch no root, and they are about where
+            // the vehicle is going, which this step knows exactly.
+            return;
+        }
+
+        // Last, after the follow pass, so neither a listener nor the controller ever sees a rider whose
+        // seat this step has just given up. Skipped entirely when the consumer wired neither, which is
+        // the common case and costs one reference comparison and one volatile read.
+        if (this.controller.isActive() || !this.setup.controls().isEmpty()) {
             this.seats.forEachOccupied(this.inputVisitor);
+        }
+
+        // Then the whole-vehicle hook, after every seat's input has been offered — which is what lets a
+        // controller resolve two riders asking for opposite things. The measured, clamped ticks rather
+        // than the configured period: the platform drops missed iterations instead of replaying them, so
+        // the period is not how much time has passed. A controller that detached inside the pass above
+        // does not get this call, because isActive() is read again rather than cached.
+        this.controller.step(this, plan.ticks());
+    }
+
+    /**
+     * Fills {@link #terrain} for this step, or decides that the last reading will do.
+     *
+     * <h2>This is the only thing in the plugin that reads blocks, so it is the only thing rationed</h2>
+     * A reading walks a column of the world under the vehicle and a second column one block ahead of it,
+     * which at the shipped reach is five block reads on flat ground and seven at worst. Everything else a
+     * control step does is arithmetic or a position write. On a regionised server a block read cannot be
+     * moved off the thread that owns the chunk, so there is no "do it asynchronously" available here and
+     * never will be — the only lever is doing it <em>less</em>, and that lever is
+     * {@link TerrainSampleGate} plus the viewer gate below.
+     *
+     * <p>Three outcomes, in the order they are decided:
+     *
+     * <ol>
+     *   <li><strong>The profile is inert to terrain.</strong> The sample is cleared and nothing is read,
+     *       which is every vehicle that existed before the terrain layer. Decided from a field computed
+     *       at construction, so it costs nothing per step.</li>
+     *   <li><strong>Nobody can see it.</strong> The last reading is kept and marked second-hand, so the
+     *       model holds the attitude it had instead of snapping level the moment it is culled — and when
+     *       a viewer arrives the vehicle is already sitting the way the ground said it should. Reading
+     *       nothing is the right cost for a model nobody holds, and the honest price is in
+     *       {@link TerrainSampling#onlyWhenSeen()}: an unseen vehicle does not arm a climb, because
+     *       arming one requires a reading taken this step.</li>
+     *   <li><strong>The gate says the last reading still describes the ground.</strong> Same handling:
+     *       kept, and marked second-hand.</li>
+     * </ol>
+     *
+     * <p>A suppressed reading is deliberately <em>not</em> {@link TerrainSample#unavailable()}. "I have
+     * no answer" and "my answer is from four ticks ago" lead to different decisions — the first blends
+     * the model flat, the second holds it where the hillside put it — and conflating them would make a
+     * saving look like a reading that failed.
+     *
+     * @param current  the configuration generation this whole step is being decided against
+     * @param nowNanos this step's clock reading, which is the one the gate ages a reading against
+     */
+    private void sampleTerrain(@NotNull VehicleSettings current, long nowNanos) {
+        if (!this.terrainActive) {
+            this.terrain.unavailable();
+            return;
+        }
+        final TerrainSampling sampling = current.terrainSampling();
+        if (sampling.onlyWhenSeen() && !this.visual.hasViewers()) {
+            this.terrain.markReused();
+            return;
+        }
+        // The position this step has already read and the heading of the step that has just finished.
+        // The heading rather than the one about to be decided because the reading is an input to that
+        // decision and cannot be taken from its output; a vehicle turns at most its own turn rate in a
+        // step, so the probe is at most that far off the heading it ends up on.
+        if (!this.terrainGate.readingDue(sampling, this.sample.x(), this.sample.y(), this.sample.z(),
+                this.state.yawDegrees(), nowNanos)) {
+            this.terrain.markReused();
+            return;
+        }
+        this.host.probeTerrain(this.terrain, this.terrainReachBlocks, this.state.yawDegrees());
+    }
+
+    /**
+     * Hands this step's attitude to the visual, if a client could see the difference.
+     *
+     * <h2>Why the gate is the wire's resolution and not an epsilon</h2>
+     * A rotation travels as one byte per axis, so two angles that round to the same byte are the same
+     * rotation to everything downstream — the renderer's own pipeline compares them that way too, and
+     * drops the second. Sending both therefore costs the full price of a packet for a difference nobody
+     * can be shown. The stored attitude keeps its full precision and keeps blending, so a change below a
+     * byte is deferred to whichever later step crosses one rather than being lost.
+     *
+     * <p>The first push is unconditional. Until one has happened the renderer is still using its own body
+     * rotation, so there is no previous value to compare against and "unchanged" would mean "never
+     * started".
+     *
+     * <h2>What is not gated</h2>
+     * The yaw is part of the comparison, not exempt from it. A vehicle driving in a straight line on flat
+     * ground pushes nothing at all, which is the common case; one that is turning pushes on the steps its
+     * heading crosses a byte on, which is what the client could draw anyway.
+     *
+     * <p>Neither is the <strong>relocation</strong>, which is the one that was gated and should not have
+     * been: a vehicle whose every displaced step went through the asynchronous teleport pushed a rotation
+     * only on the steps it was standing still, so its lean and its pitch were visible only while parked.
+     * That is now unconditional, and the reason it is safe is worth stating because it does not look safe.
+     * Three facts, in the order they stop mattering:
+     *
+     * <ol>
+     *   <li><strong>This is not a write to the root entity, and it reaches no entity at all.</strong> It
+     *       ends at the renderer's whole-model rotation, which on the shipped backend is a
+     *       <em>supplier</em> stored on the tracker. The packets come from the renderer's own tick, on
+     *       the renderer's own pool, addressed to the display entities it owns — none of which is the
+     *       root, and none of which is region-bound. A rotation pushed while the root is mid-teleport is
+     *       therefore a field assignment, and the pipeline's own equality check drops it if it says the
+     *       same thing as the last one.</li>
+     *   <li><strong>The path it does take is already guarded.</strong> The visual reaches the model
+     *       through the binding layer, whose control call declines on a released model and defers to the
+     *       entity's own scheduler when the calling thread does not own it — which is exactly the state a
+     *       cross-region teleport puts us in. So even on a backend where the push did touch the entity,
+     *       it would be staged and flushed on the far side rather than applied from here.</li>
+     *   <li><strong>It is rare now.</strong> With the movement adapter present a relocation is what the
+     *       seam always documented it as — a displacement too large for the configured threshold — rather
+     *       than every step of every vehicle.</li>
+     * </ol>
+     *
+     * <h2>It does not fight the pose pipeline, and that was checked rather than assumed</h2>
+     * The whole-model rotation and {@code TrackerPoseSink} write different things through different
+     * calls: the rotation becomes the display's own orientation, while the sink writes a bone's
+     * interpolated transformation — position, scale and local rotation. The whole-model rotation is not
+     * one of the four values the sink sends, so there is no field for the two to take turns overwriting.
+     * This is the trap that made a decorated model's scale last exactly until the next emission, and it
+     * does not apply here.
+     *
+     * @param plan the step that has just been decided and applied
+     */
+    private void pushRotation(@NotNull VehicleStepper.Plan plan) {
+        if (!this.terrainActive) {
+            // See the field: a vehicle with nothing to say about terrain leaves the renderer's own body
+            // rotation alone, because taking it over would replace it with the value it already had.
+            return;
+        }
+        final float pitch = plan.terrain().pitchDegrees();
+        final float yaw = plan.move().yawDegrees();
+        if (this.rotationSeeded
+                && !TerrainSolver.isVisiblyDifferent(pitch, this.sentPitchDegrees)
+                && !TerrainSolver.isVisiblyDifferent(yaw, this.sentYawDegrees)) {
+            return;
+        }
+        this.sentPitchDegrees = pitch;
+        this.sentYawDegrees = yaw;
+        this.rotationSeeded = true;
+        // The roll is carried and the shipped backend drops it; see RiggedVehicleVisual for why that is
+        // a renderer limit rather than a choice, and why the angle is computed anyway.
+        this.visual.setBodyRotation(pitch, yaw, plan.terrain().bankDegrees());
+    }
+
+    /**
+     * Asks the pilot what to hold this step.
+     *
+     * <h2>Why the elapsed time is converted twice</h2>
+     * The pilot needs the measured, clamped tick count, and so does {@link VehicleStepper#plan}, which
+     * computes it from the same nanoseconds a moment later. Both call {@link VehicleStepper#elapsedTicks}
+     * on the same two inputs, so the two figures are the same number by construction rather than by
+     * agreement — and the alternative, threading the value into the plan, would mean a caller could hand
+     * the stepper an elapsed time it had not measured. The conversion is a divide and a min.
+     *
+     * <h2>Why the heading comes from the state and the position from the sample</h2>
+     * The position has to be the entity's real one: a vehicle that was pushed, stopped by a wall or
+     * relocated by somebody else must be told where it actually is, which is what the sample read at the
+     * top of this step carries. The heading, by contrast, is this layer's own — it is the value the solver
+     * is about to integrate, and steering against the entity's yaw instead would aim at a bearing the
+     * renderer has already been handed something else for.
+     *
+     * <h2>Containment, and why there is no detach</h2>
+     * A pilot that throws costs this step's intent and nothing else: the failure is reported and the
+     * vehicle coasts, which is a vehicle rolling to a stop rather than a control loop that died.
+     * Deliberately <em>not</em> the detach policy a {@link VehicleController} gets — a detached controller
+     * costs the behaviour it was adding, while a detached pilot would leave an autonomous vehicle parked
+     * in the world for ever with nothing in the log to connect it to.
+     *
+     * <h2>The one allocation a piloted step makes</h2>
+     * The context, and it is deliberate. The rest of this class reuses buffers because a control step
+     * must not allocate — but a buffer handed to consumer code is a buffer a consumer can retain and read
+     * a later step out of, and the whole argument for a pilot being safe off its own thread is that what
+     * it receives is an immutable value. One small record per step for a vehicle that actually has a
+     * pilot is the price of that, and it is paid by no other vehicle.
+     *
+     * @param current      the configuration generation this whole step is being decided against
+     * @param elapsedNanos nanoseconds since the previous step
+     * @return what the pilot asked for, or {@link RiderIntent#NONE} if it asked for nothing or threw
+     */
+    private @NotNull RiderIntent pilotIntent(
+            @NotNull VehicleSettings current,
+            long elapsedNanos
+    ) {
+        final float ticks = VehicleStepper.elapsedTicks(elapsedNanos, current.maxStepTicks());
+        try {
+            return this.pilot.steer(new PilotContext(this, this.sample.x(), this.sample.y(),
+                    this.sample.z(), this.state, this.profile, ticks));
+        } catch (final RuntimeException thrown) {
+            this.logger.error("The pilot of vehicle " + this.uniqueIdentifier + " on "
+                    + this.host.describe() + " failed to steer; it will coast this step", thrown);
+            return RiderIntent.NONE;
+        }
+    }
+
+    /**
+     * Tells the pilot the vehicle is finished, once.
+     *
+     * <p>Contained for the reason every other consumer-facing hook on the teardown is: this runs on
+     * whichever thread got to the teardown first, including the platform's retired callback, and a hook
+     * that threw there would abandon the rest of the release — the carriers, the riders, the visual.
+     * Skipped entirely when there is no pilot.
+     */
+    private void closePilot() {
+        if (!this.piloted) {
+            return;
+        }
+        try {
+            this.pilot.onClosed(this);
+        } catch (final RuntimeException thrown) {
+            this.logger.error("The pilot of vehicle " + this.uniqueIdentifier + " on "
+                    + this.host.describe() + " failed to close", thrown);
         }
     }
 
@@ -869,16 +1404,31 @@ public final class VehicleImpl implements Vehicle {
     }
 
     /**
-     * Hands one occupied seat's input to the consumer's listener.
+     * Hands one occupied seat's input to the consumer's listener, then to the consumer's controller.
      *
-     * <p>The body of {@link #inputVisitor}. Allocates a {@link SeatInput} only for a seat that has a
-     * listener, so a vehicle whose consumer wired one of four seats allocates one value per step rather
-     * than four.
+     * <p>The body of {@link #inputVisitor}. One {@link SeatInput} is built and both are given it, which
+     * is what makes the controller an adaptation of the per-seat mechanism rather than a second copy of
+     * it: the two cannot disagree about what a rider did, and a consumer that supplies both pays one
+     * allocation. Nothing is built at all for a seat with no listener and no controller, so a vehicle
+     * whose consumer wired one of four seats still allocates one value per step rather than four.
      *
-     * <p>Anything the listener throws is reported and swallowed. It has to be: the platform swallows
-     * whatever escapes a scheduled body and keeps the task alive, so an exception let through here would
-     * silently stop the rest of this step — including the seats after this one — for as long as the
-     * consumer's bug lasts.
+     * <p>The listener first and the controller second, which is specific before general — the order
+     * {@link VehicleControls#listenerFor} already composes a seat's own bindings in, extended one step
+     * outwards. See {@link VehicleController#onPlayerInput}, which promises it.
+     *
+     * <h2>Two containments, and why they are not the same one</h2>
+     * Anything either of them throws is contained. It has to be: the platform swallows whatever escapes
+     * a scheduled body and keeps the task alive, so an exception let through here would silently stop
+     * the rest of this step — including the seats after this one — for as long as the consumer's bug
+     * lasts.
+     *
+     * <p>They are contained <em>differently</em>, on purpose. A {@link SeatInputListener} is a function
+     * with no state of its own, so one that throws costs that seat's reaction and nothing else, and its
+     * own documentation promises a log line every time — loud, because a listener nobody notices has
+     * stopped working is worse. A {@link VehicleController} holds the kind's invariants in fields, so one
+     * that keeps throwing has state nothing should be built on: it is throttled and eventually detached
+     * by {@link VehicleControllerDispatch}, which is the policy the input layer applies to a bound
+     * handler for the same reason.
      */
     private void dispatchSeatInput(
             @NotNull VehicleSeat seat,
@@ -886,22 +1436,41 @@ public final class VehicleImpl implements Vehicle {
             @NotNull InputSnapshot input,
             @NotNull InputState previous
     ) {
+        final SeatInputListener listener = listenerFor(seat);
+        final boolean controllerActive = this.controller.isActive();
+        if (listener == null && !controllerActive) {
+            return;
+        }
+        final SeatInput value = new SeatInput(this, seat, rider, input, previous, seat.isDriver());
+        if (listener != null) {
+            try {
+                listener.onInput(value);
+            } catch (final RuntimeException thrown) {
+                this.logger.error("A seat input listener for seat #" + seat.index() + " '" + seat.name()
+                        + "' of vehicle " + this.uniqueIdentifier + " on " + this.host.describe()
+                        + " failed", thrown);
+            }
+        }
+        if (controllerActive) {
+            this.controller.playerInput(value);
+        }
+    }
+
+    /**
+     * This seat's composed listener, or {@code null} when the consumer wired nothing for it.
+     *
+     * <p>An array read rather than a resolution: {@link #resolveSeatListeners()} composed them once at
+     * start, because composing allocates and a control step must not. The bounds check covers a seat
+     * index outside the plan the listeners were resolved against, which a vehicle whose start was
+     * unwound can be asked about.
+     */
+    private @Nullable SeatInputListener listenerFor(@NotNull VehicleSeat seat) {
         final SeatInputListener[] listeners = this.seatListeners;
         final int index = seat.index();
         if (index < 0 || index >= listeners.length) {
-            return;
+            return null;
         }
-        final SeatInputListener listener = listeners[index];
-        if (listener == null) {
-            return;
-        }
-        try {
-            listener.onInput(new SeatInput(this, seat, rider, input, previous, seat.isDriver()));
-        } catch (final RuntimeException thrown) {
-            this.logger.error("A seat input listener for seat #" + index + " '" + seat.name()
-                    + "' of vehicle " + this.uniqueIdentifier + " on " + this.host.describe()
-                    + " failed", thrown);
-        }
+        return listeners[index];
     }
 
     /**
@@ -910,9 +1479,15 @@ public final class VehicleImpl implements Vehicle {
      * <p>From {@link SeatEvents}, on the owning thread, inside the mount that caused it. The message is
      * about which seat they got, because that is the thing they cannot see: a seat is an invisible
      * carrier on a locator, so nothing on screen distinguishes driving from being carried.
+     *
+     * <p>The consumer's controller is told afterwards, so a controller that throws cannot cost the rider
+     * the one message about this that they can see. The seat is already theirs and the occupancy has
+     * already been published by this point, which is what lets the hook's documentation promise that
+     * {@link #getSeating()} agrees with what it is told.
      */
     private void seated(@NotNull VehicleSeat seat, @NotNull Player rider) {
         send(rider, seat.isDriver() ? VehicleNotice.NOW_DRIVER : VehicleNotice.NOW_PASSENGER, seat);
+        this.controller.seated(this, seat, rider);
     }
 
     /**
@@ -926,12 +1501,19 @@ public final class VehicleImpl implements Vehicle {
      * than waiting for the next step to recompute it, so a reader that looks between the two sees a
      * vehicle with no driver and no steering rather than the last thing the departed rider asked for.
      * Nobody is promoted; see the class note.
+     *
+     * <p>The consumer's controller is told last, for the reason {@link #seated} tells it last. Note that
+     * {@link VehicleSeats} publishes the new occupancy <em>after</em> the pass this is called from, so
+     * the hook's own documentation tells a controller to read its arguments rather than
+     * {@link #getSeating()} — a departure is not symmetrical with an arrival here, and saying so is
+     * cheaper than making one pass publish per seat.
      */
     private void vacated(@NotNull VehicleSeat seat, @NotNull Player rider) {
         if (seat.isDriver()) {
             this.steering = VehicleSteering.NEUTRAL;
         }
         send(rider, VehicleNotice.DISMOUNTED, seat);
+        this.controller.vacated(this, seat, rider);
     }
 
     /** Tells {@code rider} why they are not aboard, if the outcome is worth a message. */
@@ -973,10 +1555,11 @@ public final class VehicleImpl implements Vehicle {
      * vehicle that turns while accelerating travels along the heading it ends the step with, so applying
      * the translation first would put it a half-step behind its own controls.
      *
-     * <p>A {@link MoveKind#LOCAL} displacement becomes a relocation when the host has no in-place move —
-     * which is what a server running with no Mojang-mapped adapter looks like. That is expensive rather
-     * than wrong: every step becomes a scheduled transaction, and the vehicle still goes where the server
-     * said.
+     * <p>This performs the operation {@link VehicleStepper.Plan#kind()} names and makes no choice of its
+     * own. It used to make one — a {@link MoveKind#LOCAL} became a relocation here when the host had no
+     * in-place move — and that was the half of the decision the plan could not see, which is why a climb
+     * it had granted was then silently discarded. The capability now goes into the plan, so the kind that
+     * arrives is the kind that can happen.
      *
      * <p>{@link MoveKind#NONE} with a changed heading is a real case rather than a leftover: a vehicle
      * turning on the spot has no displacement at all and still has to be written, which is why the
@@ -985,8 +1568,7 @@ public final class VehicleImpl implements Vehicle {
     private void apply(@NotNull VehicleStepper.Plan plan, @NotNull VehicleState previous) {
         final VehicleMove move = plan.move();
 
-        if (plan.kind() == MoveKind.TELEPORT
-                || (plan.kind() == MoveKind.LOCAL && !this.host.supportsLocalMove())) {
+        if (plan.kind() == MoveKind.TELEPORT) {
             // The relocation carries the heading with it, so there is nothing to write separately.
             relocate(move);
             return;
@@ -1014,15 +1596,47 @@ public final class VehicleImpl implements Vehicle {
      * <p>Marks the vehicle as relocating before starting, so the loop stops deciding until the platform
      * reports back. The callback does nothing but clear that flag, because it runs on whichever thread
      * finished the relocation — which is the destination region's, not ours.
+     *
+     * <h2>The sample is left describing the destination</h2>
+     * Because the rest of the step still has to seat people, and the one position that is both known and
+     * useful at this point is the one the relocation was just given. The entity itself cannot be read: it
+     * is transiently out of the world, and reading it anyway answers either the old position or nothing.
+     *
+     * <p>So the seat follow that runs after this puts every rider where the vehicle is <em>going</em>,
+     * and each carrier gets there by the mechanism it already uses for a root that moved — its own
+     * in-place write, or its own relocation past the carrier step ceiling. The alternative, which this
+     * replaces, was to skip the follow entirely: the carriers are not passengers of the root, so the
+     * platform's teleport does not bring them, and on a host with no in-place move — where every
+     * displaced step is a relocation — the riders were therefore never moved at all while the vehicle
+     * was driving.
+     *
+     * <p>A relocation that fails leaves the carriers one step ahead of a root that did not move, and the
+     * next step reads the real position and brings them back. That is the smaller error: a failed
+     * relocation is a root that is being removed, and the step after it tears the vehicle down.
      */
     private void relocate(@NotNull VehicleMove move) {
         this.relocating = true;
-        this.host.teleport(
-                this.sample.x() + move.deltaX(),
-                this.sample.y() + move.deltaY(),
-                this.sample.z() + move.deltaZ(),
-                move.yawDegrees(),
-                succeeded -> this.relocating = false);
+        // A climb armed against the terrain the vehicle is leaving is a rise applied against terrain
+        // nobody has looked at, so it is forgotten here — on this thread, synchronously, rather than in
+        // the completion callback, which runs on the destination region's. The angles survive, because
+        // they are about how the model is sitting and not about where it is; snapping them flat across
+        // a relocation would be visible and wrong.
+        this.attitude = this.attitude.withoutClimb();
+
+        final double toX = this.sample.x() + move.deltaX();
+        // The vertical is dropped rather than carried. A relocation applies an absolute position with no
+        // interpolation, so a rise inside one snaps however carefully it was spread — which is the whole
+        // point of spreading it. The stepper refuses to produce one for any step whose write it knows
+        // will be a relocation, which now includes every step of a host with no in-place move at all; so
+        // this is the belt to that braces rather than the only guard.
+        final double toY = this.sample.y();
+        final double toZ = this.sample.z() + move.deltaZ();
+
+        this.host.teleport(toX, toY, toZ, move.yawDegrees(), succeeded -> this.relocating = false);
+
+        // After the call rather than before it, so that nothing can read a destination this layer has
+        // not actually asked for. See the class note above for what reads it.
+        this.sample.set(toX, toY, toZ, move.yawDegrees());
     }
 
     /**
@@ -1087,6 +1701,29 @@ public final class VehicleImpl implements Vehicle {
         return this.seats;
     }
 
+    /**
+     * The consumer's controller for this vehicle, wrapped in its containment.
+     *
+     * <p>Exposed for the same reason {@link #seats()} is — a test drives it directly — and for a
+     * diagnostic: {@link VehicleControllerDispatch#isDetached()} is the only way to find out that a
+     * vehicle has given up on its controller without reading the log.
+     */
+    public @NotNull VehicleControllerDispatch controllerDispatch() {
+        return this.controller;
+    }
+
+    /**
+     * What steers this vehicle while the driver's seat is empty.
+     *
+     * <p>{@link VehiclePilot#NONE} when there is nothing. Exposed for the same reason
+     * {@link #controllerDispatch()} is — a test drives it directly, and a diagnostic has no other way to
+     * find out whether a vehicle that is not moving is one nothing is piloting or one whose pilot is
+     * asking for nothing.
+     */
+    public @NotNull VehiclePilot pilot() {
+        return this.pilot;
+    }
+
     /** Whether this handle has torn down and can no longer start. */
     public synchronized boolean isStopped() {
         return this.stopped;
@@ -1097,9 +1734,21 @@ public final class VehicleImpl implements Vehicle {
         return this.scheduledPeriodTicks;
     }
 
-    /** Whether a relocation is in flight, during which the loop decides nothing. */
+    /** Whether a relocation is in flight, during which the loop decides nothing new. */
     public boolean isRelocating() {
         return this.relocating;
+    }
+
+    /**
+     * How the model is currently sitting on the terrain, and any climb in flight.
+     *
+     * <p>One read of one immutable value published whole by the control step, so it is safe from any
+     * thread — the same contract {@link #getState()} has. Deliberately not on the published api: it is
+     * internal state of a reaction, and a consumer that wants to know how a vehicle is leaning is asking
+     * for something the renderer is already showing them.
+     */
+    public @NotNull TerrainAttitude getAttitude() {
+        return this.attitude;
     }
 
     private void requireOwningThread(@NotNull String verb) {

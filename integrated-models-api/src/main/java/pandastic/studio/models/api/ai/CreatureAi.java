@@ -41,6 +41,22 @@ import java.util.concurrent.CompletableFuture;
  * with nothing logged. That is the worst failure available in this area, so the install refuses it, and
  * {@link #supportedSpecies()} exists so the refusal can name the alternatives.
  *
+ * <h2>Driving a vehicle with a plan</h2>
+ * Do not install a plan on a creature that is a vehicle root and then run an intent driver over its
+ * pathfinder. That pattern is right for a plain modelled creature and is wrong here: a vehicle's position
+ * is written by its own control step, and a navigation writing the same entity's movement from the same
+ * tick is two writers to one position with no rule for which wins. The symptom is a vehicle that travels
+ * at neither the profile's speed nor the attribute's.
+ *
+ * <p>{@link pandastic.studio.models.api.vehicle.VehicleBinder#createPiloted} is the supported path. It
+ * takes a {@code Mob}, so the requirement this interface imposes is a compile error there rather than a
+ * cast a caller has to discover, and it refuses the three combinations that cannot work — a plan that
+ * leaves the vanilla goals in place, a species {@link #supports(Mob)} rejects, and a root the server
+ * would let a rider's client steer. Note that the last of those is <strong>not</strong> implied by being
+ * a {@code Mob}: a camel and a happy ghast are brain-driven and client-steered both, so they pass
+ * {@link #supports(Mob)} and are refused as vehicle roots. See
+ * {@link pandastic.studio.models.api.vehicle.AiPilot} for the whole intersection.
+ *
  * <h2>Everything tunable comes from configuration</h2>
  * {@link #getBounds()} reads the live {@code ai.yml}. Take the bounds from here when building a plan,
  * rather than keeping a set: a reload replaces them, and a plan validated against a stale set is a plan

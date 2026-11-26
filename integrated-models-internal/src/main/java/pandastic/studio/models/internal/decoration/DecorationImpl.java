@@ -560,6 +560,40 @@ public final class DecorationImpl implements Decoration, DrivenDecoration, Culla
         return this.alive;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One volatile write through the loop membership, which is the whole mechanism. For a decoration
+     * the saving is the ambient field's own consequence: a sheltered one is already silent because it
+     * settles, but a <em>windy</em> one never settles, so without this a banner nobody can see costs its
+     * full bone count of spring integration and its full emission rate forever. That is the case this
+     * exists for.
+     *
+     * <p>The driver loop keeps publishing for a suspended decoration and that is deliberate: publishing
+     * stillness is what ends a move, and stopping it would leave a decoration that was moved once holding
+     * that velocity until somebody looked at it. The published driver is read by nobody until the resume,
+     * at which point the next step reads the latest one and carries on.
+     */
+    @Override
+    public boolean setSimulated(boolean simulated) {
+        final SimulationLoop.Registration registered;
+        synchronized (this) {
+            registered = this.registration;
+        }
+        return registered != null && registered.setStepping(simulated);
+    }
+
+    @Override
+    public boolean isSimulated() {
+        final SimulationLoop.Registration registered;
+        synchronized (this) {
+            registered = this.registration;
+        }
+        // A decoration that has not spawned or has stopped has no simulation, and reporting it as
+        // simulated would have the pass count it among what it failed to save.
+        return registered != null && registered.isStepping();
+    }
+
     @Override
     public @NotNull String toString() {
         return "Decoration[" + this.rig.getName() + " at " + this.placement + " in "

@@ -76,6 +76,15 @@ public record ViewSettings(
      */
     private static final double TICKS_PER_SECOND = 20D;
 
+    /**
+     * Nanoseconds in a second.
+     *
+     * <p><strong>A unit definition, not a tunable.</strong> The interval is configured in ticks and the
+     * off-tick scheduler every loop in this plugin is dispatched on takes nanoseconds; this is the SI
+     * conversion between the two.
+     */
+    private static final double NANOS_PER_SECOND = 1_000_000_000D;
+
     /** Blocks per chunk, for turning a client's reported render distance into a distance. */
     private static final int BLOCKS_PER_CHUNK = 16;
 
@@ -154,6 +163,28 @@ public record ViewSettings(
     /** The interval between samples, in seconds. */
     public double sampleIntervalSeconds() {
         return this.sampleIntervalTicks / TICKS_PER_SECOND;
+    }
+
+    /**
+     * The interval between two culling passes, in nanoseconds.
+     *
+     * <h2>One interval governs both the sampling and the deciding, deliberately</h2>
+     * {@link #sampleIntervalTicks()} is the period of <em>both</em> repeating tasks in this layer: the
+     * per-player sampler that publishes positions and the server-wide pass that decides from them. That
+     * is not a convenience — it is what makes the anti-flap guarantee in this record's constructor true.
+     *
+     * <p>That guarantee compares {@link #exitMarginBlocks()} against the distance a viewer covers in one
+     * sampling interval, because the staleness that can flip a decision is the age of the <em>decision</em>,
+     * not of the sample it was made from. Give the pass its own, slower period and a viewer can cross the
+     * whole hysteresis band between two passes while every sample behind them was perfectly fresh: the
+     * margin would then have to be proven against the slower of the two, which is a number no key states.
+     * A second rate key would therefore have to come with a second term in that inequality, and until
+     * somebody wants one badly enough to add both, this is one key.
+     *
+     * @return the pass period, in nanoseconds
+     */
+    public long periodNanos() {
+        return Math.round(sampleIntervalSeconds() * NANOS_PER_SECOND);
     }
 
     /** Squared near radius, so the omnidirectional test needs no square root. */

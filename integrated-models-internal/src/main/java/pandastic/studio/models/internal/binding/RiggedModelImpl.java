@@ -17,6 +17,9 @@ import pandastic.studio.models.internal.sim.LocomotionStage;
 import pandastic.studio.models.internal.sim.ModelSimulation;
 import pandastic.studio.models.internal.sim.SimulationLoop;
 import pandastic.studio.models.internal.sim.SimulationSettingsSource;
+import pandastic.studio.models.internal.view.CullableModel;
+import pandastic.studio.models.internal.view.ModelViewport;
+import pandastic.studio.models.internal.view.ModelViewportSink;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -116,14 +119,24 @@ import java.util.function.Consumer;
  * sample period — stays server-wide, and the simulation is deliberately handed the unmodified
  * configuration: {@code driverBounds} is the only thing in that snapshot the sampler reads and the only
  * thing a binding can change, so nothing else sees a derived view of its settings.
+ *
+ * <h2>Why it is also a {@link CullableModel}</h2>
+ * Because this is where the per-step cost of a bound model lives, and the view layer is the only thing
+ * that knows whether anybody is benefiting from it. The sampler publishes the position the culler decides
+ * from — it is read on the owning region thread anyway, so the culler gets it for free and never touches
+ * the entity itself — and the culler drives {@link #setSimulated(boolean)}, which takes an unseen model's
+ * simulation off the loop. See {@link #viewportSink()} for the one thing this does <em>not</em> do.
  */
-public final class RiggedModelImpl implements RiggedModel {
+public final class RiggedModelImpl implements RiggedModel, CullableModel {
 
     /**
      * Published by the owning region thread, read by the simulation thread. The seam, and the only
      * object both threads touch.
      */
     private final @NotNull DriverHolder driver = new DriverHolder();
+
+    /** Who the view layer has decided currently holds this model. The same type the culler drives. */
+    private final @NotNull ModelViewport viewport = new ModelViewport();
 
     private final @NotNull Rig rig;
     private final @NotNull UUID uniqueIdentifier = UUID.randomUUID();
@@ -195,6 +208,32 @@ public final class RiggedModelImpl implements RiggedModel {
 
     private volatile boolean alive;
 
+    /**
+     * Where the culler believes this model is, published by the sampler on the owning region thread.
+     *
+     * <h2>Why four fields and not one immutable value</h2>
+     * Because the sampling path is contractually allocation-free apart from the one driver it publishes,
+     * and a record per sample would break that for every bound model on the server. The cost is that a
+     * reader can in principle see a coordinate from one sample beside a coordinate from the next.
+     *
+     * <p>Which is harmless here, and provably so rather than by luck: two consecutive samples are one
+     * sampling interval apart, so a torn position is wrong by at most the distance the anchor moved in
+     * that interval — which is exactly the quantity {@code view.yml}'s {@code exitMarginBlocks} is proven
+     * against. A culling decision is a comparison against a range with a hysteresis band wider than that
+     * by construction, so a tear cannot flip one. The only visibly odd case is a tear across a world
+     * change, which produces one pass decided from a position in the wrong world and is repaired by the
+     * next pass a tenth of a second later.
+     *
+     * <p>{@link #cullWorldId} is the gate on all three: it stays {@link #UNKNOWN_WORLD} until the first
+     * publication, which is what keeps a model that has not been read yet out of the culler's reach
+     * entirely rather than placing it at the origin.
+     */
+    private volatile @NotNull UUID cullWorldId = UNKNOWN_WORLD;
+
+    private volatile double cullX;
+    private volatile double cullY;
+    private volatile double cullZ;
+
     /** The single-use latch. Guarded by {@code this}; see "Stopping exactly once". */
     private boolean stopped;
 
@@ -229,6 +268,18 @@ public final class RiggedModelImpl implements RiggedModel {
      * them.
      */
     private static final float TICKS_PER_SECOND = 20F;
+
+    /**
+     * Stands for "no region thread has published this model's world yet".
+     *
+     * <p><strong>A sentinel, not a tunable.</strong> The nil UUID is not a world identifier any server
+     * can produce, so it cannot collide with a real one, and a model still carrying it answers
+     * {@link #isCullable()} with {@code false} — which keeps it out of the view layer entirely instead of
+     * being compared against a position nobody read. The alternative, a nullable accessor, would put a
+     * null check on the hot path of every (model, viewer) pair in every pass to describe a state that
+     * lasts one tick.
+     */
+    private static final @NotNull UUID UNKNOWN_WORLD = new UUID(0L, 0L);
 
     /**
      * A model that differs about nothing, driven entirely by the server's configuration.
@@ -558,6 +609,14 @@ public final class RiggedModelImpl implements RiggedModel {
             return false;
         }
 
+        // Seeds the culler's position from the owning thread, which is where we already are. Without it
+        // a model is outside the view layer's reach until its first sample, so for one sampling interval
+        // it is held by nobody — and a model held by nobody is a model whose simulation is suspended. The
+        // symptom would be every model visibly catching up a tenth of a second after it spawned.
+        if (this.anchor.readInto(this.sample)) {
+            publishCullPosition();
+        }
+
         final long periodTicks = this.bindingSettings.current().samplePeriodTicks();
         final RenderBinding opened = this.anchor.render(this.rig);
 
@@ -700,6 +759,11 @@ public final class RiggedModelImpl implements RiggedModel {
             release(opened, anchorRetired);
         }
 
+        // Bookkeeping rather than packets: the tracker's own release despawned every display. Clearing
+        // it keeps the view layer from believing a viewer still holds a model that is gone, which for a
+        // handle the binder has not dropped yet would be one pass of decisions about nothing.
+        this.viewport.clear();
+
         this.onStopped.accept(this);
     }
 
@@ -751,6 +815,11 @@ public final class RiggedModelImpl implements RiggedModel {
             stop(false);
             return;
         }
+
+        // From the same single reading, before anything else consumes it. This is the only place the
+        // view layer's position comes from, and publishing it here rather than letting the culler ask is
+        // the entire reason a culling pass may run off the tick.
+        publishCullPosition();
 
         final PhysicsDriver sampled = this.driverSampler.sample(
                 this.sample.x(), this.sample.y(), this.sample.z(), this.sample.yawDegrees());
@@ -881,6 +950,137 @@ public final class RiggedModelImpl implements RiggedModel {
     /** Whether this handle has torn down and can no longer spawn. */
     public synchronized boolean isStopped() {
         return this.stopped;
+    }
+
+    // ------------------------------------------------------------------ culling
+
+    @Override
+    public @NotNull UUID modelId() {
+        return this.uniqueIdentifier;
+    }
+
+    @Override
+    public @NotNull UUID worldId() {
+        return this.cullWorldId;
+    }
+
+    @Override
+    public double cullX() {
+        return this.cullX;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The anchor's own y, which for an entity is its feet rather than the model's visual centre. The
+     * bind pose that would know better lives behind the renderer seam and the entity's height is not
+     * something this layer may read off the tick, so a tall model is kept on screen by
+     * {@link #cullRadius()}'s configured default instead of by a height nobody measured — exactly as a
+     * decoration is.
+     */
+    @Override
+    public double cullY() {
+        return this.cullY;
+    }
+
+    @Override
+    public double cullZ() {
+        return this.cullZ;
+    }
+
+    @Override
+    public @NotNull ModelViewport viewport() {
+        return this.viewport;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <h2>Deliberately no packets, and this is the one asymmetry with a decoration</h2>
+     * A decoration's bones hang off a standalone tracker that only this plugin's viewer list populates,
+     * so taking it away from a viewer is ours to do and is a real saving in bandwidth. An entity-backed
+     * model's bones hang off the entity, and the server already decides who is told about that entity:
+     * a player beyond its tracking range is not sent its bone updates by the renderer either, because
+     * they are not tracking the thing the bones belong to.
+     *
+     * <p>So what this culler adds for a bound model is not the packets, it is
+     * {@link #setSimulated(boolean)} — and spawning and despawning bone displays per viewer on top of the
+     * renderer's own entity-tracker viewer management would be two authorities fighting over the same
+     * set, which is the flapping the hysteresis exists to prevent rather than a saving.
+     *
+     * <p>The consequence is stated rather than hidden: a player who still has a suspended model's bones
+     * sees them stop moving. That is only ever a player the decision has already placed outside the view
+     * bowtie, which the view layer's own argument says no camera mode can see — see
+     * {@link pandastic.studio.models.internal.view.ViewSettings}. If that argument ever stops being good
+     * enough, the fix is a per-viewer hide on the render seam, not a change here.
+     */
+    @Override
+    public @NotNull ModelViewportSink viewportSink() {
+        return ModelViewportSink.NONE;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Alive, and with a position some region thread has actually published. A model between bind and
+     * its first read has no position to judge, and treating the unpublished one as the origin would put
+     * every freshly bound model at {@code 0, 0, 0} in a world nobody is in.
+     */
+    @Override
+    public boolean isCullable() {
+        return this.alive && !UNKNOWN_WORLD.equals(this.cullWorldId);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One volatile write through the loop membership. What it skips, per step, is the whole of
+     * {@code ModelSimulation.step}: the pose reset, the gait or clip-driven base pose, the spring
+     * integration over every bone at the configured substep rate, the at-rest test and the emission.
+     *
+     * <p>What it does <strong>not</strong> skip is this model's own sampler, and that is not an
+     * oversight. The sampler is what publishes the position the culling decision is made from, so
+     * stopping it would freeze the decision at whatever it last was; it is also the second of the two
+     * ways a binding learns its anchor is gone. A bound model therefore keeps paying one anchor read per
+     * configured period while nobody can see it, and loses everything downstream of that read.
+     */
+    @Override
+    public boolean setSimulated(boolean simulated) {
+        final SimulationLoop.Registration registered;
+        synchronized (this) {
+            registered = this.registration;
+        }
+        return registered != null && registered.setStepping(simulated);
+    }
+
+    @Override
+    public boolean isSimulated() {
+        final SimulationLoop.Registration registered;
+        synchronized (this) {
+            registered = this.registration;
+        }
+        return registered != null && registered.isStepping();
+    }
+
+    /**
+     * Publishes {@link #sample}'s position as what the culler may read.
+     *
+     * <p><strong>Only ever called from the owning region thread</strong>, immediately after a successful
+     * {@link ModelAnchor#readInto}, which is the one place the position is defined. The world is read
+     * through the anchor's entity on that same thread and written <em>last</em>, so a reader that has
+     * seen a world has seen at least one complete position for it.
+     *
+     * <p>A model on a non-entity anchor publishes no world and is consequently never culled. That is the
+     * correct answer rather than a hole: nothing in production builds one yet, and a position with no
+     * world cannot be compared against a viewer's at all.
+     */
+    private void publishCullPosition() {
+        this.cullX = this.sample.x();
+        this.cullY = this.sample.y();
+        this.cullZ = this.sample.z();
+        this.cullWorldId = this.anchor instanceof EntityAnchor entityAnchor
+                ? entityAnchor.entity().getWorld().getUID()
+                : UNKNOWN_WORLD;
     }
 
     /** The period the live sampler was dispatched at, or the last one if it is not running. */

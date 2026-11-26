@@ -6,7 +6,40 @@ import org.jetbrains.annotations.NotNull;
 import java.util.Objects;
 
 /**
- * How one vehicle drives: nine numbers and an enum, immutable and validated.
+ * How one vehicle drives: eight numbers, two enums and a terrain response, immutable and validated.
+ *
+ * <h2>Why the kind and the terrain response live here and not beside this type</h2>
+ * Because "how this vehicle drives" is exactly this type's contract, and {@link VehicleKind} and
+ * {@link TerrainResponse} are statements about precisely that. Split across two types they would be two
+ * things a caller can pass separately, which means two things it can pass <em>inconsistently</em> — a
+ * boat's terrain response handed to a flyer's kind — and the combination is the thing worth validating.
+ * One record, one constructor, one {@link #requireWithin(VehicleBounds)} call, and the contradiction is
+ * reported at the point the vehicle is described rather than discovered on the first hill.
+ *
+ * <h2>Error or ignored: which contradictions are refused</h2>
+ * {@link VehicleKind} promises that a term its kind does not honour is "ignored rather than rejected", so
+ * that one {@link TerrainResponse} can be shared across kinds without a caller having to blank the fields
+ * that do not apply. This record keeps that promise, and the rule it follows is:
+ *
+ * <ul>
+ *   <li><strong>Ignored</strong> — a term the kind does not honour. It is unused, not broken:
+ *       {@link TerrainResponse#stepHeightBlocks()} on anything but {@link VehicleKind#GROUND},
+ *       {@link TerrainResponse#slopePitchDegrees()} on a kind that does not
+ *       {@link VehicleKind#followsSlope()}, and {@link TerrainResponse#accelerationPitchDegrees()} on
+ *       one that does not {@link VehicleKind#pitchesFromAcceleration()}. Refusing these would make
+ *       sharing a response impossible and would buy nothing: the vehicle drives correctly, it simply
+ *       does not use that number.</li>
+ *   <li><strong>Refused</strong> — a term that <em>is</em> honoured and that nothing can drive. Every
+ *       angle in a response is a ceiling scaled by the fraction of a full-rate input achieved, so a term
+ *       whose full rate is zero is a zero-over-zero: see {@link #requireBankIsDrivable}. That is not an
+ *       unused number, it is an undefined one, and an undefined roll is a model that renders wrong rather
+ *       than a model that renders flat.</li>
+ * </ul>
+ *
+ * <p>The three remaining scalings cannot fall into that trap and so need no rule: the acceleration pitch
+ * divides by {@link #accelerationBlocksPerTickSquared()} and {@link #brakingBlocksPerTickSquared()},
+ * which this constructor already requires to be positive, and the slope pitch is scaled by the terrain
+ * rather than by any term of this profile.
  *
  * <h2>Per vehicle, not per server</h2>
  * The same split {@link pandastic.studio.models.api.rig.PhysicsProfile} makes. A profile is a statement
@@ -44,6 +77,11 @@ import java.util.Objects;
  * @param boostMultiplier              multiple of the forward top speed the sprint key unlocks; {@code 1}
  *                                     for a vehicle with no boost
  * @param controlScheme                what the rider's left and right keys do
+ * @param kind                         what medium the vehicle moves through, and therefore which terms
+ *                                     of {@code terrain} are honoured
+ * @param terrain                      how far the model leans, pitches and climbs in answer to what it
+ *                                     is driving over. {@link TerrainResponse#NONE} for a vehicle that
+ *                                     does not react to terrain at all
  */
 public record VehicleProfile(
         float maxForwardSpeedBlocksPerTick,
@@ -54,11 +92,15 @@ public record VehicleProfile(
         float frictionPerTick,
         float turnRateDegreesPerTick,
         float boostMultiplier,
-        @NotNull ControlScheme controlScheme
+        @NotNull ControlScheme controlScheme,
+        @NotNull VehicleKind kind,
+        @NotNull TerrainResponse terrain
 ) {
 
     public VehicleProfile {
         Objects.requireNonNull(controlScheme, "controlScheme");
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(terrain, "terrain");
         requirePositive(maxForwardSpeedBlocksPerTick, "maxForwardSpeedBlocksPerTick");
         // Zero is legal for these two and means "this vehicle does not do that at all": a one-way
         // conveyor cannot reverse, and a turning vehicle never strafes.
@@ -74,20 +116,74 @@ public record VehicleProfile(
                     "boostMultiplier must be finite and at least 1, the neutral multiplier, but was "
                             + boostMultiplier);
         }
+        requireBankIsDrivable(terrain, controlScheme, turnRateDegreesPerTick,
+                maxStrafeSpeedBlocksPerTick);
+    }
+
+    /**
+     * A profile in the shape this record had before 1.1.0: the same nine arguments, in the same order.
+     *
+     * <p>Supplies {@link VehicleKind#GROUND} and {@link TerrainResponse#NONE}, which together are
+     * exactly what a profile written before those two existed described — a vehicle on solid ground that
+     * does not lean, does not pitch and does not climb. So a consumer that moves to 1.1.0 and changes
+     * {@code new VehicleProfile(...)} to this call keeps the behaviour it already had, bit for bit, and
+     * the compiler points at every site it has to look at.
+     *
+     * <p>{@link TerrainResponse#NONE} is a constant rather than a fresh record, so every profile built
+     * this way shares one identity-stable response; a consumer comparing responses by identity across
+     * two profiles gets the answer it expects.
+     *
+     * @param maxForwardSpeedBlocksPerTick top speed ahead, before any boost
+     * @param maxReverseSpeedBlocksPerTick top speed astern, as a positive figure
+     * @param maxStrafeSpeedBlocksPerTick  top speed sideways, as a positive figure
+     * @param accelerationBlocksPerTickSquared how fast speed rises toward what the rider asked for
+     * @param brakingBlocksPerTickSquared  how fast speed falls when the rider asks for the other way
+     * @param frictionPerTick              share of speed lost per tick while coasting, {@code 0} to 1
+     * @param turnRateDegreesPerTick       how fast the vehicle yaws at full turn input
+     * @param boostMultiplier              multiple of the forward top speed the sprint key unlocks
+     * @param controlScheme                what the rider's left and right keys do
+     * @return the profile, on the ground and inert to terrain
+     * @throws IllegalArgumentException if any component is malformed, exactly as before
+     */
+    @Contract(value = "_, _, _, _, _, _, _, _, _ -> new", pure = true)
+    public static @NotNull VehicleProfile withoutTerrain(
+            float maxForwardSpeedBlocksPerTick,
+            float maxReverseSpeedBlocksPerTick,
+            float maxStrafeSpeedBlocksPerTick,
+            float accelerationBlocksPerTickSquared,
+            float brakingBlocksPerTickSquared,
+            float frictionPerTick,
+            float turnRateDegreesPerTick,
+            float boostMultiplier,
+            @NotNull ControlScheme controlScheme
+    ) {
+        return new VehicleProfile(
+                maxForwardSpeedBlocksPerTick,
+                maxReverseSpeedBlocksPerTick,
+                maxStrafeSpeedBlocksPerTick,
+                accelerationBlocksPerTickSquared,
+                brakingBlocksPerTickSquared,
+                frictionPerTick,
+                turnRateDegreesPerTick,
+                boostMultiplier,
+                controlScheme,
+                VehicleKind.GROUND,
+                TerrainResponse.NONE);
     }
 
     /**
      * A builder seeded with {@code bounds}, which {@link Builder#build()} validates against.
      *
-     * <p>A builder rather than a nine-argument constructor for the reason
+     * <p>A builder rather than an eleven-argument constructor for the reason
      * {@link pandastic.studio.models.api.locomotion.GaitTuning} has one: a row of same-typed floats
      * accepts two transposed arguments without complaint, and the result is a vehicle that drives
      * slightly wrong in a way no exception points at.
      *
      * <p>The bounds are supplied here rather than at {@code build()} so that a caller cannot assemble a
      * profile and then forget to check it. Everything the builder does not set keeps a neutral value: no
-     * reverse, no strafe, no boost, no friction, and {@link ControlScheme#TURNING}, which is what a
-     * vanilla mount does.
+     * reverse, no strafe, no boost, no friction, {@link ControlScheme#TURNING},
+     * {@link VehicleKind#GROUND} and {@link TerrainResponse#NONE} — which together are what a vanilla
+     * mount does.
      *
      * @param bounds the operator's ranges
      * @return a builder
@@ -104,6 +200,10 @@ public record VehicleProfile(
      * required — finite, non-negative, a fraction where a fraction is meant — while this enforces what
      * the operator permits. A profile can be perfectly well formed and still be refused by a server that
      * does not want a vehicle that fast.
+     *
+     * <p>Checks the {@link #terrain()} response as well, against {@link VehicleBounds#terrain()}, so one
+     * call validates the whole profile. A caller that had to remember a second call for the terrain
+     * half would eventually not, and the half it forgot is the half that moves the model.
      *
      * @param bounds the operator's ranges
      * @return this profile
@@ -126,7 +226,24 @@ public record VehicleProfile(
                 bounds.maxTurnRateDegreesPerTick(), "maxTurnRateDegreesPerTick");
         requireAtMost(this.boostMultiplier, "boostMultiplier",
                 bounds.maxBoostMultiplier(), "maxBoostMultiplier");
+        // Last, so that a profile breaking both a speed ceiling and an angle ceiling complains about the
+        // speed first: the speed is what decides whether the server can move the vehicle at all, and the
+        // angle is cosmetic on top of it.
+        this.terrain.requireWithin(bounds.terrain());
         return this;
+    }
+
+    /**
+     * Whether this vehicle climbs steps, which needs both a kind that climbs and a height to climb.
+     *
+     * <p>Here rather than on either half because it is the one question that needs both, and a caller
+     * asking it with the two apart is a caller that can ask it of a mismatched pair.
+     *
+     * @return whether a step up is something this profile does
+     */
+    @Contract(pure = true)
+    public boolean climbs() {
+        return this.terrain.climbs(this.kind);
     }
 
     /**
@@ -161,6 +278,12 @@ public record VehicleProfile(
         private float boostMultiplier = 1F;
 
         private @NotNull ControlScheme controlScheme = ControlScheme.TURNING;
+
+        /** What a vanilla mount is, and what every profile written before the kind existed described. */
+        private @NotNull VehicleKind kind = VehicleKind.GROUND;
+
+        /** The identity: a vehicle that says nothing about terrain does not react to it. */
+        private @NotNull TerrainResponse terrain = TerrainResponse.NONE;
 
         private Builder(@NotNull VehicleBounds bounds) {
             this.bounds = Objects.requireNonNull(bounds, "bounds");
@@ -220,6 +343,23 @@ public record VehicleProfile(
             return this;
         }
 
+        /** What medium the vehicle moves through, which selects the terrain terms that are honoured. */
+        public @NotNull Builder kind(@NotNull VehicleKind kind) {
+            this.kind = Objects.requireNonNull(kind, "kind");
+            return this;
+        }
+
+        /**
+         * How far the model leans, pitches and climbs in answer to the terrain.
+         *
+         * <p>The response may be shared with other profiles, including profiles of another
+         * {@link VehicleKind}: it is immutable, and terms the kind does not honour are ignored.
+         */
+        public @NotNull Builder terrain(@NotNull TerrainResponse terrain) {
+            this.terrain = Objects.requireNonNull(terrain, "terrain");
+            return this;
+        }
+
         /**
          * The profile, checked against the bounds this builder was given.
          *
@@ -237,9 +377,51 @@ public record VehicleProfile(
                     this.frictionPerTick,
                     this.turnRateDegreesPerTick,
                     this.boostMultiplier,
-                    this.controlScheme)
+                    this.controlScheme,
+                    this.kind,
+                    this.terrain)
                     .requireWithin(this.bounds);
         }
+    }
+
+    /**
+     * Refuses a bank angle that nothing in this profile can drive.
+     *
+     * <p>{@link TerrainResponse#bankDegrees()} is a <em>ceiling</em> reached at a full-rate turn, and the
+     * solver scales it by the fraction of that full rate the vehicle is currently achieving. Which
+     * input the fraction is taken from is the {@link ControlScheme}'s to say: a turning vehicle leans
+     * because it is yawing, so the denominator is {@code turnRateDegreesPerTick}; a strafing vehicle
+     * never yaws, so it leans because it is sliding, and the denominator is
+     * {@code maxStrafeSpeedBlocksPerTick}.
+     *
+     * <p>A zero denominator is therefore not a vehicle that leans less — it is a fraction of the form
+     * {@code 0 / 0}. Left to the solver that is a NaN roll, and a NaN rotation is a model the renderer
+     * draws wrong rather than a model it draws level, which is why this one is refused where the three
+     * kind-applicability contradictions are ignored. A zero bank needs no driver and is always legal, so
+     * {@link TerrainResponse#NONE} passes under either scheme and no profile written before the terrain
+     * layer existed can be refused by this check.
+     */
+    private static void requireBankIsDrivable(
+            @NotNull TerrainResponse terrain,
+            @NotNull ControlScheme controlScheme,
+            float turnRateDegreesPerTick,
+            float maxStrafeSpeedBlocksPerTick
+    ) {
+        if (terrain.bankDegrees() <= 0F) {
+            return;
+        }
+        final boolean turning = controlScheme == ControlScheme.TURNING;
+        final float driver = turning ? turnRateDegreesPerTick : maxStrafeSpeedBlocksPerTick;
+        if (driver > 0F) {
+            return;
+        }
+        final String driverName =
+                turning ? "turnRateDegreesPerTick" : "maxStrafeSpeedBlocksPerTick";
+        throw new IllegalArgumentException("bankDegrees is " + terrain.bankDegrees()
+                + ", which is the lean at a full-rate input, but " + driverName + " is "
+                + driver + " under ControlScheme." + controlScheme
+                + ", so the fraction of full rate the lean is scaled by is undefined; either give the"
+                + " vehicle something to lean from or set bankDegrees to 0");
     }
 
     private static void requirePositive(float value, String name) {

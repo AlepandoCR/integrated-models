@@ -13,8 +13,16 @@ import org.jetbrains.annotations.NotNull;
  */
 final class VehicleFixtures {
 
+    /**
+     * Terrain ceilings wide enough for every response below, and narrow enough that an out-of-range one
+     * is a round number: thirty degrees of roll, twenty-five of slope, twenty of acceleration pitch, a
+     * one-block step over at most eight ticks, and a blend no slower than a twentieth a tick.
+     */
+    static final @NotNull TerrainBounds TERRAIN_BOUNDS =
+            new TerrainBounds(30F, 25F, 20F, 1F, 8, 0.05F);
+
     /** Wide enough to admit every profile below, and nothing here tests the bounds themselves. */
-    static final @NotNull VehicleBounds BOUNDS = new VehicleBounds(2F, 1F, 45F, 4F);
+    static final @NotNull VehicleBounds BOUNDS = new VehicleBounds(2F, 1F, 45F, 4F, TERRAIN_BOUNDS);
 
     private VehicleFixtures() {
     }

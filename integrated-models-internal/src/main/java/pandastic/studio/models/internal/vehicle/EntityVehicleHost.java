@@ -3,6 +3,7 @@ package pandastic.studio.models.internal.vehicle;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.player.PlayerTeleportEvent;
@@ -151,6 +152,110 @@ public final class EntityVehicleHost implements VehicleHost {
                 this.entity.getZ(),
                 this.entity.getYaw());
         return true;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Two columns and nothing else: the one the root entity is in, which this region owns by
+     * definition, and the one block ahead of it along {@code headingDegrees}, which it may not. The
+     * second is read only after {@link Bukkit#isOwnedByCurrentRegion(World, int, int)} and
+     * {@link World#isChunkLoaded(int, int)} both say yes — ownership because the read is otherwise
+     * illegal, and loadedness because a read of an unloaded chunk is a chunk <em>load</em>, which is the
+     * one operation a ticking region is least allowed to perform inline. {@code isChunkLoaded} is the
+     * query that answers it without performing it; nothing on this path can generate or load a chunk.
+     * See the seam's own note for why the refusal was chosen over a deferred answer.
+     *
+     * <p>Both questions are skipped when the column ahead is in the vehicle's own chunk, which is where
+     * a one-block probe spends fifteen sixteenths of its life. That is not a shortcut around the rule —
+     * it is the rule, restated: the chunk the ticking entity is in is owned by the region ticking it and
+     * is loaded by construction.
+     *
+     * <p>The scan is a bounded walk down a column, from {@code reachBlocks} above the vehicle to the same
+     * distance below it, clamped to the world's own height. Bounded by the caller's reach rather than by
+     * a figure of this class's own, so the only thing that decides how far a vehicle looks is the step
+     * height its profile declares.
+     */
+    @Override
+    public boolean probeTerrain(
+            @NotNull TerrainSample sample,
+            float reachBlocks,
+            float headingDegrees
+    ) {
+        Objects.requireNonNull(sample, "sample");
+        if (!this.entity.isValid()) {
+            sample.unavailable();
+            return false;
+        }
+
+        final World world = this.entity.getWorld();
+        final double x = this.entity.getX();
+        final double y = this.entity.getY();
+        final double z = this.entity.getZ();
+
+        // The column the vehicle is in, scanned downward from the block its base is inside. Starting at
+        // the base rather than above it is what makes a vehicle already part-way into a step read the top
+        // of that step as its surface, which is the honest answer and the one that leaves the climb that
+        // is in flight alone.
+        final int ownX = (int) Math.floor(x);
+        final int ownZ = (int) Math.floor(z);
+        final double surfaceY = surfaceIn(world, ownX, ownZ, y, y - reachBlocks - 1.0D);
+
+        // Minecraft yaw grows clockwise from +Z, so the facing is (-sin, cos). The same convention
+        // VehicleSolver projects its displacement into, so the probe looks where the vehicle is going.
+        final double heading = Math.toRadians(headingDegrees);
+        final int aheadX = (int) Math.floor(x - Math.sin(heading) * TerrainSample.PROBE_RUN_BLOCKS);
+        final int aheadZ = (int) Math.floor(z + Math.cos(heading) * TerrainSample.PROBE_RUN_BLOCKS);
+
+        final int chunkX = aheadX >> 4;
+        final int chunkZ = aheadZ >> 4;
+        // The vehicle's own chunk needs neither question asked of it: the region ticking this body owns
+        // the entity, so it owns the chunk the entity is in, and that chunk is loaded or the entity would
+        // not be ticking. The probe runs one block, so this is the common case — a column one block ahead
+        // leaves the vehicle's chunk only in the sixteenth of positions next to a boundary — and the two
+        // platform calls are skipped for it rather than asked and answered yes.
+        final boolean sameChunk = chunkX == ownX >> 4 && chunkZ == ownZ >> 4;
+        final boolean aheadReadable = sameChunk
+                || (Bukkit.isOwnedByCurrentRegion(world, chunkX, chunkZ)
+                        && world.isChunkLoaded(chunkX, chunkZ));
+        final double surfaceYAhead = aheadReadable
+                ? surfaceIn(world, aheadX, aheadZ, y + reachBlocks, y - reachBlocks - 1.0D)
+                : TerrainSample.NO_SURFACE;
+
+        sample.set(y, surfaceY, aheadReadable, surfaceYAhead);
+        return true;
+    }
+
+    /**
+     * The top face of the highest non-passable block in one column, between two world heights.
+     *
+     * <p>Passability rather than solidity, because the question is whether the vehicle would be stopped
+     * by it: a block with no collision — grass, a torch, water — is not a surface a vehicle rests on or
+     * climbs onto, however solid its material is.
+     *
+     * @param world   the root entity's world, which is the only one this layer reads
+     * @param blockX  the column's x
+     * @param blockZ  the column's z
+     * @param fromY   the world y to start at, scanning downward, clamped to the world's ceiling
+     * @param toY     the world y to stop at, clamped to the world's floor
+     * @return the top face of the first such block, or {@link TerrainSample#NO_SURFACE}
+     */
+    private static double surfaceIn(
+            @NotNull World world,
+            int blockX,
+            int blockZ,
+            double fromY,
+            double toY
+    ) {
+        final int top = Math.min((int) Math.floor(fromY), world.getMaxHeight() - 1);
+        final int bottom = Math.max((int) Math.floor(toY), world.getMinHeight());
+        for (int blockY = top; blockY >= bottom; blockY--) {
+            if (!world.getBlockAt(blockX, blockY, blockZ).isPassable()) {
+                // The top face, not the block's own coordinate: a vehicle stands on the face.
+                return blockY + 1;
+            }
+        }
+        return TerrainSample.NO_SURFACE;
     }
 
     @Override
